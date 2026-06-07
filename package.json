@@ -1,0 +1,26 @@
+{
+  "name": "jobbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal job-search assistant — high quality, not high volume. LaTeX resumes.",
+  "type": "module",
+  "scripts": {
+    "jobbot": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "js-yaml": "^4.1.0",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

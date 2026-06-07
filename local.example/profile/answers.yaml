@@ -1,0 +1,40 @@
+# Sensitive application answers.
+# These are used when autofilling applications.
+# Items with `ask_every_time: true` will never be autofilled automatically
+# — the system will stop and ask you each time.
+
+questions:
+  citizenship:
+    question: "Are you legally authorized to work in the United States?"
+    answer: ""
+    ask_every_time: false
+
+  sponsorship:
+    question: "Will you now or in the future require sponsorship for employment visa status?"
+    answer: ""
+    ask_every_time: false
+
+  disability:
+    question: "Do you have a disability?"
+    answer: "I don't wish to answer"
+    ask_every_time: true
+
+  veteran:
+    question: "Are you a protected veteran?"
+    answer: "I don't wish to answer"
+    ask_every_time: false
+
+  gender:
+    question: "What is your gender?"
+    answer: "I don't wish to answer"
+    ask_every_time: false
+
+  race:
+    question: "What is your race/ethnicity?"
+    answer: "I don't wish to answer"
+    ask_every_time: false
+
+  applied_recently:
+    question: "Have you applied to this company in the last 6 months?"
+    answer: null
+    ask_every_time: true

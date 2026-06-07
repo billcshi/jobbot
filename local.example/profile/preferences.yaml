@@ -1,0 +1,59 @@
+# JobBot Preferences
+# Used for scoring jobs against your personal criteria.
+# Tune these to reflect what matters most to you.
+
+preferred_titles:
+  - "senior software engineer"
+  - "staff software engineer"
+  - "principal engineer"
+  - "software engineer"
+  - "backend engineer"
+  - "platform engineer"
+  - "infrastructure engineer"
+
+preferred_locations:
+  remote: true
+  cities:
+    - "san francisco"
+    - "new york"
+    - "seattle"
+    - "austin"
+    - "los angeles"
+    - "boston"
+    - "denver"
+    - "portland"
+
+preferred_companies: []
+# Example:
+#   - "stripe"
+#   - "figma"
+#   - "notion"
+
+preferred_industries:
+  - "developer tools"
+  - "ai/ml"
+  - "cloud infrastructure"
+  - "platform"
+  - "open source"
+  - "productivity"
+  - "data engineering"
+
+deal_breakers:
+  description: ""
+  keywords: []
+  # Add keywords to auto-reject, e.g.:
+  #   - "crypto"
+  #   - "gambling"
+
+weights:
+  title_match: 0.35
+  location_match: 0.25
+  company_match: 0.15
+  industry_match: 0.20
+  description_quality: 0.05
+
+tiers:
+  A: 0.80
+  B: 0.65
+  C: 0.50
+  D: 0.00

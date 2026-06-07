@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+.env
+.DS_Store
+
+# Personal data — NEVER commit this directory.
+# The repo ships local.example/ as a public template.
+# Your real profile, database, browser sessions, and rendered
+# resumes live here and must stay local.
+local/
+
+# Claude Code local settings (machine-specific paths, permissions)
+.claude/settings.local.json

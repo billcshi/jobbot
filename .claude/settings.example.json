@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install *)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm jobbot *)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm add *)",
+      "Bash(git *)",
+      "Bash(pdflatex *)",
+      "Bash(apt list *)",
+      "Bash(sudo apt install *)"
+    ]
+  }
+}
