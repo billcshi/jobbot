@@ -27,5 +27,8 @@ export const CANDIDATE_PATH = path.join(PROFILE_DIR, 'candidate.yaml');
 export const PREFERENCES_PATH = path.join(PROFILE_DIR, 'preferences.yaml');
 export const ANSWERS_PATH = path.join(PROFILE_DIR, 'answers.yaml');
 
+/** Prompt templates shipped in the public repo. */
+export const PROMPTS_DIR = path.join(PROJECT_ROOT, 'prompts');
+
 /** Template directory shipped in the public repo. Copy to local/ on first setup. */
 export const LOCAL_EXAMPLE_DIR = path.join(PROJECT_ROOT, 'local.example');

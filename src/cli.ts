@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
- * JobBot CLI — v0
+ * JobBot CLI — v0.2
  *
  * Commands:
  *   init-db                     Create/update the SQLite database
  *   add-url <url>               Add a job posting URL
- *   score                       Score all unscored jobs
+ *   extract [--job <id>]        Extract job details (title, company, etc.)
+ *   score                       Score all jobs against preferences
  *   list [--tier <tier>]        List jobs, optionally filtered by tier
  */
 
 import { initDb } from './db/init.js';
 import { addUrl } from './jobs/add-url.js';
+import { extractJob, extractAll } from './jobs/extract.js';
 import { scoreAll } from './jobs/score.js';
 import { listJobs } from './jobs/list.js';
 import { logger } from './utils/logger.js';
@@ -21,6 +23,7 @@ function usage(): never {
 Usage:
   pnpm jobbot init-db
   pnpm jobbot add-url <url>
+  pnpm jobbot extract [--job <id>]
   pnpm jobbot score
   pnpm jobbot list [--tier <tier>]
 `);
@@ -89,8 +92,30 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'extract': {
+      const jobId = flags['job'];
+      if (jobId) {
+        const result = await extractJob(Number(jobId));
+        if (result.success) {
+          console.log(`"${result.title}" at ${result.company} (${result.location})`);
+        } else {
+          logger.error(`Extract failed: ${result.error}`);
+        }
+      } else {
+        const results = await extractAll();
+        for (const r of results) {
+          if (r.success) {
+            console.log(`[${r.jobId}] "${r.title}" at ${r.company}`);
+          } else {
+            console.log(`[${r.jobId}] FAILED: ${r.error}`);
+          }
+        }
+      }
+      break;
+    }
+
     case 'score': {
-      const result = scoreAll();
+      const result = await scoreAll();
       console.log(`Scored ${result.scored} job(s).`);
       break;
     }

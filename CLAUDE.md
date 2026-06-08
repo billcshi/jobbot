@@ -64,6 +64,14 @@ Set `ask_every_time: true` for anything the user wants to decide per-application
 5. **Sensitive data stays local.** `local/profile/answers.yaml` is never shared or uploaded.
 6. **AI fills the profile, not the user.** Interview the user and write YAML. Never tell them to manually edit profile files unless they explicitly ask.
 
+## Git Discipline
+
+- **Do NOT commit early.** Wait for the user to explicitly request a commit.
+- **One commit per version.** Squash work into a single clean commit per version number.
+- **Never push without approval.** Always ask before pushing to origin.
+- **No personal data.** `local/` is gitignored. Audit notes and job data stay on disk only.
+- **Clean messages.** Format: `vX.Y: Short description` with `Co-Authored-By` trailer.
+
 ## Configuration
 
 This repo separates **project code** (public, committed) from **personal data** (local, gitignored):

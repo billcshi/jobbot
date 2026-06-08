@@ -17,11 +17,12 @@ preferred_locations:
     - "san francisco"
     - "new york"
     - "seattle"
-    - "austin"
-    - "los angeles"
-    - "boston"
-    - "denver"
-    - "portland"
+
+# Only accept these countries. Everything else = deal-breaker.
+# US citizens can work in Canada via USMCA TN visa.
+allowed_countries:
+  - "united states"
+  - "canada"
 
 preferred_companies: []
 # Example:
