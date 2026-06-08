@@ -13,3 +13,4 @@ local/
 # Claude Code local settings (machine-specific paths, permissions)
 .claude/settings.local.json
 v0.2-notes*.md
+v0.3-notes*.md
