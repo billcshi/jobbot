@@ -24,35 +24,32 @@ You are a resume tailoring assistant. Given a candidate's real background and a 
 
 ## Output Format
 
-Return a YAML document suitable for rendering with Typst:
+Return ONLY valid JSON in this exact format:
 
-```yaml
-tailored_for:
-  company: "Acme Corp"
-  title: "Senior Platform Engineer"
-
-summary: >
-  Platform engineer with 7+ years of experience building
-  reliable cloud infrastructure...
-
-selected_experience:
-  - company: "..."
-    title: "..."
-    start: "..."
-    end: "..."
-    highlights:
-      - "..."
-    technologies:
-      - "..."
-
-selected_skills:
-  languages: [...]
-  frameworks: [...]
-  infrastructure: [...]
-  databases: [...]
-
-keyword_adjustments:
-  - original: "built CI/CD"
-    adjusted: "built CI/CD pipelines"
-    reason: "match job description terminology"
+```json
+{
+  "summary": "Platform engineer with 7+ years of experience building reliable cloud infrastructure...",
+  "selected_experience": [
+    {
+      "company": "...",
+      "title": "...",
+      "start": "...",
+      "end": "...",
+      "highlights": ["..."]
+    }
+  ],
+  "selected_skills": {
+    "languages": ["..."],
+    "frameworks": ["..."],
+    "infrastructure": ["..."],
+    "databases": ["..."]
+  },
+  "keyword_adjustments": [
+    {
+      "original": "built CI/CD",
+      "adjusted": "built CI/CD pipelines",
+      "reason": "match job description terminology"
+    }
+  ]
+}
 ```

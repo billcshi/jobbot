@@ -3,12 +3,15 @@
 <a href="/" class="back-link">← Back to Dashboard</a>
 
 <!-- job header -->
-<div class="job-header">
-  <h1><%= job.title || 'Untitled' %></h1>
-  <p class="meta">
-    <strong><%= job.company || 'Unknown Company' %></strong>
-    <% if (job.location) { %> · <%= job.location %><% } %>
-  </p>
+<div class="job-header" style="display:flex;justify-content:space-between;align-items:flex-start">
+  <div>
+    <h1><%= job.title || 'Untitled' %></h1>
+    <p class="meta">
+      <strong><%= job.company || 'Unknown Company' %></strong>
+      <% if (job.location) { %> · <%= job.location %><% } %>
+    </p>
+  </div>
+  <span class="delete-link" onclick="deleteJob(<%= job.id %>, '<%= (job.title || 'Untitled').replace(/'/g, "\\'") %>')" title="Delete this job">🗑️ Delete</span>
 </div>
 
 <!-- score + pipeline -->
@@ -44,19 +47,23 @@
     <%
       const stages = [
         { key: 'new', label: 'New' },
-        { key: 'extracted', label: 'Extracted' },
-        { key: 'scored', label: 'Scored' },
-        { key: 'tailored', label: 'Tailored' },
+        { key: 'extracted', label: 'Extracted', clickable: true },
+        { key: 'scored', label: 'Scored', clickable: true },
+        { key: 'composed', label: 'Composed', clickable: true },
+        { key: 'audited', label: 'Audited', clickable: true },
         { key: 'applied', label: 'Applied' },
       ];
       const currentIdx = stages.findIndex(s => s.key === job.status);
+      const doneStages = stages.filter((s, i) => i <= currentIdx && s.clickable);
     %>
-    <div class="pipeline-steps">
+    <div class="pipeline-steps" id="pipeline-steps">
       <% for (let i = 0; i < stages.length; i++) { %>
         <% if (i > 0) { %>
           <div class="pipeline-connector <%= i <= currentIdx ? 'done' : '' %>"></div>
         <% } %>
-        <div class="pipeline-step <%= i < currentIdx ? 'done' : (i === currentIdx ? 'current' : '') %>">
+        <div class="pipeline-step <%= i < currentIdx ? 'done' : (i === currentIdx ? 'current' : '') %>"
+             data-stage="<%= stages[i].key %>"
+             data-clickable="<%= i <= currentIdx && stages[i].clickable ? '1' : '0' %>">
           <div class="dot"></div>
           <span><%= stages[i].label %></span>
         </div>
@@ -65,6 +72,95 @@
     <p style="margin-top:16px;font-size:13px;color:var(--text-muted)">
       Current: <strong style="color:var(--text)"><%= helpers.statusLabel(job.status) %></strong>
     </p>
+
+    <!-- stage detail panels -->
+    <div id="stage-extracted" class="stage-detail" style="display:none">
+      <h3>📋 Extracted Data</h3>
+      <div class="detail-row"><span class="detail-label">Title</span><span class="detail-value"><%= job.title || '-' %></span></div>
+      <div class="detail-row"><span class="detail-label">Company</span><span class="detail-value"><%= job.company || '-' %></span></div>
+      <div class="detail-row"><span class="detail-label">Location</span><span class="detail-value"><%= job.location || '-' %></span></div>
+      <div class="detail-row"><span class="detail-label">ATS</span><span class="detail-value"><%= job.ats_type %></span></div>
+      <div class="regenerate-row">
+        <input type="text" id="instr-extract" class="instr-input" placeholder="Optional: AI instruction for re-extract..." />
+        <button class="btn-regen" onclick="regenerate('extract', 'instr-extract')">🔄 Regenerate</button>
+        <span class="regen-status" id="status-extract"></span>
+      </div>
+    </div>
+
+    <div id="stage-scored" class="stage-detail" style="display:none">
+      <h3>📊 Score Breakdown</h3>
+      <% if (job.score != null) { %>
+        <div class="score-display" style="margin-bottom:8px">
+          <div class="score-number" style="font-size:32px;color:<%=
+            job.tier === 'A' ? 'var(--green)' :
+            job.tier === 'B' ? 'var(--accent)' :
+            job.tier === 'C' ? 'var(--yellow)' : 'var(--red)'
+          %>"><%= helpers.scoreFmt(job.score) %></div>
+          <span class="badge <%= helpers.tierClass(job.tier) %>"><%= helpers.tierLabel(job.tier) %></span>
+        </div>
+        <% if (reasonParagraphs.length > 0) { %>
+          <% for (const p of reasonParagraphs) { %><p style="font-size:13px;color:var(--text-muted);margin-bottom:4px"><%= p.trim() %></p><% } %>
+        <% } %>
+      <% } else { %>
+        <p style="color:var(--text-dim);font-size:13px">Not scored yet.</p>
+      <% } %>
+      <div class="regenerate-row">
+        <input type="text" id="instr-score" class="instr-input" placeholder="Optional: e.g. 'Focus more on backend skills'..." />
+        <button class="btn-regen" onclick="regenerate('score', 'instr-score')">🔄 Regenerate</button>
+        <span class="regen-status" id="status-score"></span>
+      </div>
+    </div>
+
+    <div id="stage-composed" class="stage-detail" style="display:none">
+      <h3>📄 Composed Resume</h3>
+      <% if (resumeVersion && resumeVersion.pdf_path) { %>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:8px">PDF generated and ready for download:</p>
+        <a href="<%= '/resumes/' + resumeVersion.pdf_path.split('/').pop() %>" class="btn-link" download>📥 Download Resume</a>
+        <% if (hasCoverLetter) { %>
+          <a href="<%= '/resumes/' + job.id + '-cover-letter.pdf' %>" class="btn-link" download>📥 Download Cover Letter</a>
+        <% } %>
+        <span id="cl-status" style="font-size:11px;color:var(--text-dim);margin-left:8px"></span>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:8px"><%= resumeVersion.pdf_path %></p>
+      <% } else { %>
+        <p style="color:var(--text-dim);font-size:13px">Not composed yet. Run <code>pnpm jobbot compose --job <%= job.id %></code>.</p>
+      <% } %>
+      <div class="regenerate-row">
+        <input type="text" id="instr-compose" class="instr-input" placeholder="Optional: e.g. 'Emphasize AWS experience'..." />
+        <button class="btn-regen" onclick="regenerate('compose', 'instr-compose')">🔄 Regenerate</button>
+        <span class="regen-status" id="status-compose"></span>
+      </div>
+    </div>
+
+    <div id="stage-audited" class="stage-detail" style="display:none">
+      <h3>🔍 Audit Results</h3>
+      <% if (auditData) { %>
+        <div style="display:flex;gap:16px;margin-bottom:12px">
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:700;color:<%= auditData.overallScore >= 70 ? 'var(--green)' : 'var(--red)' %>"><%= auditData.overallScore || '-' %></div>
+            <div style="font-size:10px;color:var(--text-dim)">Overall</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:700;color:var(--accent)"><%= auditData.contentScore || '-' %></div>
+            <div style="font-size:10px;color:var(--text-dim)">Content</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:28px;font-weight:700;color:var(--purple)"><%= auditData.visualScore || '-' %></div>
+            <div style="font-size:10px;color:var(--text-dim)">Visual</div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted)">
+          <%= (auditData.contentIssues || []).length + (auditData.visualIssues || []).length %> total issues
+          (<%= (auditData.contentIssues || []).length %> content, <%= (auditData.visualIssues || []).length %> visual)
+        </p>
+      <% } else { %>
+        <p style="color:var(--text-dim);font-size:13px">Not audited yet. Run <code>pnpm jobbot audit --job <%= job.id %></code>.</p>
+      <% } %>
+      <div class="regenerate-row">
+        <input type="text" id="instr-audit" class="instr-input" placeholder="Optional: AI instruction for re-audit..." />
+        <button class="btn-regen" onclick="regenerate('audit', 'instr-audit')">🔄 Regenerate</button>
+        <span class="regen-status" id="status-audit"></span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -112,4 +208,153 @@
   </div>
 </div>
 
+<!-- event timeline -->
+<% if (events && events.length > 0) { %>
+  <div class="card" style="margin-top:24px">
+    <h2>Event Timeline</h2>
+    <div style="position:relative;padding-left:20px">
+      <div style="position:absolute;left:4px;top:4px;bottom:4px;width:2px;background:var(--border)"></div>
+      <% for (const e of events) { %>
+        <div style="position:relative;padding:6px 0 6px 16px;font-size:13px">
+          <div style="position:absolute;left:-18px;top:11px;width:8px;height:8px;border-radius:50%;background:<%=
+            e.event_type === 'ingest' ? 'var(--purple)' :
+            e.event_type === 'extract' ? 'var(--accent)' :
+            e.event_type === 'score' ? 'var(--green)' :
+            e.event_type === 'compose' ? 'var(--yellow)' :
+            e.event_type === 'audit_pass' ? 'var(--green)' :
+            e.event_type === 'audit_fail' ? 'var(--red)' :
+            'var(--text-dim)'
+          %>;border:2px solid var(--bg);z-index:1"></div>
+          <span style="color:var(--text-dim);font-size:11px;margin-right:8px"><%= e.created_at %></span>
+          <span style="color:var(--text);font-weight:600"><%= e.event_type %></span>
+          <% if (e.description) { %><span style="color:var(--text-muted)"> — <%= e.description %></span><% } %>
+        </div>
+      <% } %>
+    </div>
+  </div>
+<% } %>
+
+<style>
+.stage-detail {
+  margin-top: 16px; padding: 16px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.stage-detail h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+.pipeline-step[data-clickable="1"] { cursor: pointer; }
+.pipeline-step[data-clickable="1"]:hover span { color: var(--accent); }
+.pipeline-step[data-clickable="1"]:hover .dot { box-shadow: 0 0 0 4px rgba(88,166,255,0.3); }
+.regenerate-row {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+  display: flex; gap: 8px; align-items: center;
+}
+.instr-input {
+  flex: 1; background: var(--bg-elevated); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 10px; font-size: 12px; font-family: inherit;
+}
+.instr-input:focus { outline: none; border-color: var(--accent); }
+.instr-input::placeholder { color: var(--text-dim); }
+.btn-regen {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  padding: 6px 12px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  transition: all 0.15s;
+}
+.btn-regen:hover { border-color: var(--accent); color: var(--accent); }
+.regen-status { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+</style>
+<script>
+// Bind click handlers to pipeline steps via data attributes
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.pipeline-step[data-clickable="1"]').forEach(function(step) {
+    step.addEventListener('click', function() {
+      showStageDetail(this.getAttribute('data-stage'));
+    });
+  });
+  // Auto-expand the last completed stage
+  var clickable = document.querySelectorAll('.pipeline-step[data-clickable="1"]');
+  if (clickable.length > 0) {
+    var last = clickable[clickable.length - 1];
+    showStageDetail(last.getAttribute('data-stage'));
+  }
+});
+
+let activeStage = null;
+
+async function regenerate(step, inputId) {
+  if (!confirm(`Regenerate ${step} for this job? This will reset the pipeline back to before ${step} and re-run.`)) return;
+  const instruction = document.getElementById(inputId).value.trim();
+  const statusEl = document.getElementById('status-' + step);
+  statusEl.textContent = '⏳ Running...';
+  statusEl.style.color = 'var(--yellow)';
+  try {
+    const resp = await fetch(`/api/jobs/<%= job.id %>/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ step, instruction: instruction || undefined }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '✓ Started — page will refresh';
+      statusEl.style.color = 'var(--green)';
+      setTimeout(() => window.location.reload(), 2000);
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+      statusEl.style.color = 'var(--red)';
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+    statusEl.style.color = 'var(--red)';
+  }
+}
+
+async function generateCoverLetter() {
+  if (!confirm('Generate a cover letter for this job via AI? This will replace any existing one.')) return;
+  const btn = document.getElementById('cl-btn');
+  const status = document.getElementById('cl-status');
+  btn.disabled = true; status.textContent = '⏳ Generating...'; status.style.color = 'var(--yellow)';
+  try {
+    const resp = await fetch('/api/jobs/<%= job.id %>/cover-letter', { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      status.innerHTML = '✓ <a href="/resumes/<%= job.id %>-cover-letter.pdf?' + Date.now() + '" style="color:var(--accent)" download>Download</a>';
+      status.style.color = 'var(--green)';
+      btn.textContent = '🔄 Regenerate';
+    } else {
+      status.textContent = '✕ ' + (data.error || 'Failed');
+      status.style.color = 'var(--red)';
+    }
+  } catch (err) {
+    status.textContent = '✕ ' + err.message;
+    status.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+}
+
+function showStageDetail(key) {
+  var el = document.getElementById('stage-' + key);
+  if (!el) return;
+  if (activeStage && activeStage !== el) {
+    activeStage.style.display = 'none';
+  }
+  if (el.style.display === 'none' || !el.style.display) {
+    el.style.display = 'block';
+    activeStage = el;
+  } else {
+    el.style.display = 'none';
+    activeStage = null;
+  }
+}
+
+async function deleteJob(id, label) {
+  if (!confirm(`Delete job #${id}: "${label}"?\n\nThis is permanent and cannot be undone.`)) return;
+  const resp = await fetch(`/api/jobs/${id}/delete`, { method: 'POST' });
+  if (resp.ok) {
+    window.location.href = '/';
+  } else {
+    const data = await resp.json();
+    alert(`Delete failed: ${data.error}`);
+  }
+}
+</script>
 <%- include('_foot') %>

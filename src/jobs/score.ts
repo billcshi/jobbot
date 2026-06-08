@@ -73,8 +73,11 @@ export async function scoreAll(): Promise<ScoreAllResult> {
     return { scored: 0, skipped: 0 };
   }
 
-  const updateStmt = db.prepare(
-    'UPDATE jobs SET score = ?, tier = ?, score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?',
+  const updateWithStatus = db.prepare(
+    "UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?",
+  );
+  const updatePlaceholder = db.prepare(
+    "UPDATE jobs SET score = ?, tier = ?, score_reason = ?, updated_at = datetime('now') WHERE id = ?",
   );
 
   let scored = 0;
@@ -84,21 +87,25 @@ export async function scoreAll(): Promise<ScoreAllResult> {
     // Skip placeholder jobs (no title = not extracted yet)
     if (!job.title) {
       const result = deterministicScore(job);
-      updateStmt.run(result.score, result.tier, result.reason, job.id);
+      updatePlaceholder.run(result.score, result.tier, result.reason, job.id);
       skipped++;
       continue;
     }
 
     try {
       const result = await scoreJobWithLLM(job);
-      updateStmt.run(result.score, result.tier, result.reason, job.id);
+      updateWithStatus.run(result.score, result.tier, result.reason, job.id);
+      // Log event
+      db.prepare(
+        "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'score', ?, ?, datetime('now'))",
+      ).run(job.id, `${result.tier} (${result.score.toFixed(2)})`, JSON.stringify({ score: result.score, tier: result.tier, reason: result.reason.slice(0, 200) }));
       scored++;
       logger.debug(`Job ${job.id}: ${result.tier} (${result.score}) — ${result.reason.slice(0, 80)}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`LLM scoring failed for job ${job.id}: ${msg}`);
       const fallback = deterministicScore(job);
-      updateStmt.run(fallback.score, fallback.tier, fallback.reason, job.id);
+      updateWithStatus.run(fallback.score, fallback.tier, fallback.reason, job.id);
       skipped++;
     }
   }

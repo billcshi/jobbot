@@ -110,6 +110,23 @@
     font-size: 10px; color: var(--red); max-width: 400px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .queue-run-btn {
+    margin-left: auto; background: none; border: none;
+    color: var(--text-dim); cursor: pointer; font-size: 14px;
+    padding: 2px 8px; border-radius: 4px; flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .queue-run-btn:hover {
+    color: var(--green); background: rgba(63,185,80,0.1);
+  }
+  .queue-del-btn {
+    margin-left: 0; background: none; border: none;
+    color: var(--text-dim); cursor: pointer; font-size: 14px;
+    padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+  }
+  .queue-del-btn:hover {
+    color: var(--red); background: rgba(248,81,73,0.1);
+  }
 
   .source-label {
     font-size: 11px; color: var(--text-dim); text-transform: uppercase;
@@ -124,11 +141,40 @@
   .page-header { margin-bottom: 28px; }
   .page-header h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
   .page-header p { color: var(--text-muted); font-size: 14px; }
+  .btn-run {
+    background: var(--green);
+    color: #fff;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .btn-run:hover { filter: brightness(1.15); }
+  .btn-run:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
 </style>
 
-<div class="page-header">
-  <h1>Data Pipeline</h1>
-  <p>How job postings flow from URL to application-ready resume. Click badges to inspect each queue.</p>
+<div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start">
+  <div>
+    <h1>Data Pipeline</h1>
+    <p>How job postings flow from URL to application-ready resume. Click badges to inspect each queue.</p>
+  </div>
+  <div style="text-align:right;flex-shrink:0">
+    <button id="run-btn" class="btn-run" onclick="startPipeline()" title="Run the full pipeline (extract → score → compose → audit)">▶ Run Pipeline</button>
+    <div id="run-progress" style="display:none;margin-top:8px;font-size:12px;color:var(--text-muted)">
+      <span id="run-stage"></span>
+      <span id="run-spinner" style="display:none"> ⏳</span>
+    </div>
+    <select id="run-step" style="margin-top:4px;background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:11px">
+      <option value="">Full pipeline</option>
+      <option value="extract">Extract only</option>
+      <option value="score">Score only</option>
+      <option value="compose">Compose only</option>
+      <option value="audit">Audit only</option>
+    </select>
+  </div>
 </div>
 
 <div class="source-label">
@@ -175,6 +221,8 @@
           <span class="jid">#<%= j.id %></span>
           <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 70) %>…</a>
           <span class="tag"><%= j.ats_type %></span>
+          <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'extract')" title="Run extraction">▶</button>
+          <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
       <% } %>
     </div>
@@ -188,6 +236,8 @@
           <span class="jid">#<%= j.id %></span>
           <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 50) %>…</a>
           <span class="err"><%= j.score_reason %></span>
+          <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'extract')" title="Retry extraction">▶</button>
+          <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
       <% } %>
     </div>
@@ -228,6 +278,8 @@
           <span class="jid">#<%= j.id %></span>
           <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
           <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'score')" title="Run this step">▶</button>
+          <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
       <% } %>
     </div>
@@ -255,22 +307,104 @@
       <% if (tierCounts.A > 0) { %><span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= tierCounts.A %> A</strong></span><% } %>
       <% if (tierCounts.B > 0) { %><span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--accent)"><%= tierCounts.B %> B</strong></span><% } %>
       <% if (tierCounts.C > 0) { %><span class="metric"><span class="dot dot-wait"></span> <strong style="color:var(--yellow)"><%= tierCounts.C %> C</strong></span><% } %>
+      <% if (tierCounts.D > 0) { %><span class="metric"><span class="dot dot-fail"></span> <strong style="color:var(--red)"><%= tierCounts.D %> D</strong> (skipped)</span><% } %>
     </div>
   </div>
 
-  <!-- Step 4–6: Planned --------------------------------------------------- -->
-  <% [{ ver: 'v0.4', num: 'STEP 4', title: 'Tailor', cmd: 'pnpm jobbot tailor --job <id> (planned)' },
-      { ver: 'v0.4', num: 'STEP 5', title: 'Render', cmd: 'pnpm jobbot render --job <id> (planned)' },
-      { ver: 'v1.0', num: 'STEP 6', title: 'Apply', cmd: 'pnpm jobbot apply --job <id> (planned)' }].forEach(function(s) { %>
-    <div class="stage planned">
-      <div class="stage-header">
-        <span class="stage-number planned-tag"><%= s.ver %></span>
-        <span class="stage-title"><%= s.title %></span>
-        <span class="stage-cmd"><%= s.cmd %></span>
-      </div>
-      <p style="color:var(--text-dim);font-size:13px">Coming in <%= s.ver %>.</p>
+  <!-- Step 4: Compose ---------------------------------------------------- -->
+  <div class="stage <%= composeDone > 0 ? 'done' : 'active' %>">
+    <div class="stage-header">
+      <span class="stage-number">STEP 4</span>
+      <span class="stage-title">Compose</span>
+      <span class="stage-cmd">pnpm jobbot compose --job &lt;id&gt;</span>
     </div>
-  <% }); %>
+    <div class="comp-flow">
+      <div class="comp comp-fetch"><div class="comp-title">Job + Profile</div><div class="comp-detail">description<br>candidate.yaml<br>preferences</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-llm"><div class="comp-title">DeepSeek LLM</div><div class="comp-detail">prompts/tailor-resume.md<br>select + reorder<br>rephrase bullets</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-render"><div class="comp-title">Inject + Render</div><div class="comp-detail">master.tex<br>replace placeholders<br>pdflatex → PDF</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-output"><div class="comp-title">PDF Output</div><div class="comp-detail">local/resumes/<br>&lt;job-id&gt;-resume.pdf</div></div>
+    </div>
+    <div class="stage-foot">
+      <strong><%= composeEligible %></strong> eligible (A/B/C only) ·
+      <% if (dSkipped > 0) { %><span class="metric"><span class="dot dot-fail"></span> <strong style="color:var(--red)"><%= dSkipped %> D</strong> skipped</span><% } %>
+      <span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= composeDone %></strong> composed</span>
+      <% if (composeQueued.length > 0) { %>
+        <span class="toggle-badge wait" onclick="toggleQueue('q-compose-queued')">⏳ <%= composeQueued.length %> queued</span>
+      <% } else { %>
+        <span class="toggle-badge empty">⏳ 0 queued</span>
+      <% } %>
+      <span class="toggle-badge empty">✕ 0 failed</span>
+    </div>
+    <% if (composeQueued.length > 0) { %>
+    <div class="job-queue" id="q-compose-queued">
+      <p style="color:var(--text-dim);margin-bottom:6px">Scored, awaiting composition:</p>
+      <% for (const j of composeQueued) { %>
+        <div class="job-queue-item">
+          <span class="jid">#<%= j.id %></span>
+          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'compose')" title="Run compose">▶</button>
+          <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
+        </div>
+      <% } %>
+    </div>
+    <% } %>
+  </div>
+
+  <!-- Step 5: Audit ------------------------------------------------------ -->
+  <div class="stage <%= auditDone > 0 ? 'done' : 'active' %>">
+    <div class="stage-header">
+      <span class="stage-number">STEP 5</span>
+      <span class="stage-title">Audit</span>
+      <span class="stage-cmd">pnpm jobbot audit --job &lt;id&gt;</span>
+    </div>
+    <div class="comp-flow">
+      <div class="comp comp-fetch"><div class="comp-title">Resume PDF</div><div class="comp-detail">rendered resume<br>pdftotext → text</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-llm"><div class="comp-title">Content Audit</div><div class="comp-detail">DeepSeek LLM<br>prompts/audit-resume.md<br>accuracy · keywords</div></div>
+      <span class="comp-arrow">+</span>
+      <div class="comp comp-parse"><div class="comp-title">Visual Audit</div><div class="comp-detail">pdftoppm → PNG<br>Claude Vision<br>layout · formatting</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-output"><div class="comp-title">Audit Report</div><div class="comp-detail">content + visual score<br>issues + suggestions<br>audit.json</div></div>
+    </div>
+    <div class="stage-foot">
+      <strong><%= auditDone + auditQueued.length %></strong> eligible ·
+      <span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= auditDone %></strong> audited</span>
+      <% if (auditQueued.length > 0) { %>
+        <span class="toggle-badge wait" onclick="toggleQueue('q-audit-queued')">⏳ <%= auditQueued.length %> queued</span>
+      <% } else { %>
+        <span class="toggle-badge empty">⏳ 0 queued</span>
+      <% } %>
+      <span class="toggle-badge empty">✕ 0 failed</span>
+    </div>
+    <% if (auditQueued.length > 0) { %>
+    <div class="job-queue" id="q-audit-queued">
+      <p style="color:var(--text-dim);margin-bottom:6px">Composed, awaiting audit:</p>
+      <% for (const j of auditQueued) { %>
+        <div class="job-queue-item">
+          <span class="jid">#<%= j.id %></span>
+          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'audit')" title="Run this step">▶</button>
+          <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
+        </div>
+      <% } %>
+    </div>
+    <% } %>
+  </div>
+
+  <!-- Step 6: Apply (planned) -------------------------------------------- -->
+  <div class="stage planned">
+    <div class="stage-header">
+      <span class="stage-number planned-tag">v1.0</span>
+      <span class="stage-title">Apply</span>
+      <span class="stage-cmd">pnpm jobbot apply --job &lt;id&gt; (planned)</span>
+    </div>
+    <p style="color:var(--text-dim);font-size:13px">Coming in v1.0.</p>
+  </div>
 
 </div>
 
@@ -278,6 +412,77 @@
   function toggleQueue(id) {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('open');
+  }
+  async function runJobStep(id, step) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    try {
+      const resp = await fetch('/api/run/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: id, step }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        alert(`Failed: ${data.error}`);
+        btn.disabled = false;
+        btn.textContent = '▶';
+      }
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+      btn.disabled = false;
+      btn.textContent = '▶';
+    }
+  }
+  async function deleteQueueJob(id) {
+    if (!confirm(`Delete job #${id}?\n\nThis is permanent and cannot be undone.`)) return;
+    const resp = await fetch(`/api/jobs/${id}/delete`, { method: 'POST' });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      const data = await resp.json();
+      alert(`Delete failed: ${data.error}`);
+    }
+  }
+
+  let pollTimer = null;
+
+  async function startPipeline() {
+    const step = document.getElementById('run-step').value;
+    const body = step ? { step } : {};
+    const resp = await fetch('/api/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await resp.json();
+    if (!data.ok && resp.status === 409) {
+      alert('Pipeline is already running.');
+      return;
+    }
+    if (!data.ok) {
+      alert('Failed to start: ' + (data.error || 'unknown'));
+      return;
+    }
+    document.getElementById('run-btn').disabled = true;
+    document.getElementById('run-progress').style.display = 'block';
+    document.getElementById('run-spinner').style.display = 'inline';
+    document.getElementById('run-stage').textContent = 'Starting...';
+    pollProgress();
+  }
+
+  async function pollProgress() {
+    const resp = await fetch('/api/run/status');
+    const s = await resp.json();
+    document.getElementById('run-stage').textContent = s.message || s.stage;
+    if (s.running) {
+      document.getElementById('run-spinner').style.display = 'inline';
+      pollTimer = setTimeout(pollProgress, 2000);
+    } else {
+      document.getElementById('run-spinner').style.display = 'none';
+      document.getElementById('run-btn').disabled = false;
+      document.getElementById('run-stage').textContent = s.message || 'Complete';
+      setTimeout(() => window.location.reload(), 1500);
+    }
   }
 </script>
 

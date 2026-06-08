@@ -1,0 +1,112 @@
+<%- include('_head', { title: 'AI Call Log' }) %>
+
+<h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">AI Call Log</h1>
+<p style="color:var(--text-muted);margin-bottom:8px;font-size:13px">
+  Latest 500 lines from <code>local/logs/ai-&lt;date&gt;.jsonl</code>.
+  For the full log, use the shell: <code style="background:var(--bg);padding:2px 6px;border-radius:3px">cat local/logs/ai-*.jsonl | jq</code>
+</p>
+
+<div class="filter-bar">
+  <label>Operation:
+    <select onchange="filterTable(this.value)" id="op-filter">
+      <option value="">All</option>
+      <% for (const op of operations) { %>
+        <option value="<%= op %>"><%= op %></option>
+      <% } %>
+    </select>
+  </label>
+  <label>Status:
+    <select onchange="filterStatus(this.value)" id="status-filter">
+      <option value="">All</option>
+      <option value="success">✓ Success</option>
+      <option value="fail">✕ Failed</option>
+    </select>
+  </label>
+  <span style="margin-left:auto;font-size:12px;color:var(--text-dim)">
+    <%= entries.length %> entries
+    · input: <strong style="color:var(--accent)"><%= totalPrompt.toLocaleString() %></strong>
+    · output: <strong style="color:var(--green)"><%= totalCompletion.toLocaleString() %></strong>
+    · cached: <strong style="color:var(--purple)"><%= totalCached.toLocaleString() %></strong>
+  </span>
+</div>
+
+<% if (entries.length === 0) { %>
+  <div class="empty">
+    <p style="font-size:32px;">📭</p>
+    <p>No AI calls logged yet. Run a pipeline step or use the profile AI editor to generate some.</p>
+  </div>
+<% } else { %>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Operation</th>
+        <th>Model</th>
+        <th>Request</th>
+        <th>Response</th>
+        <th title="Input tokens">In</th>
+        <th title="Output tokens">Out</th>
+        <th title="Cached tokens (billed at 10%)">Cache</th>
+        <th>Duration</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% for (const e of entries) { %>
+        <tr>
+          <td style="white-space:nowrap;font-size:11px;color:var(--text-dim)"><%= e.time %></td>
+          <td><span class="op-badge op-<%= e.operation %>"><%= e.operation %></span></td>
+          <td style="font-size:11px;color:var(--text-dim)"><%= e.model.split('-')[0] %></td>
+          <td style="max-width:160px;font-size:12px" title="<%= e.requestSummary %>"><%= e.requestSummary.slice(0, 50) %><%= e.requestSummary.length > 50 ? '…' : '' %></td>
+          <td style="max-width:160px;font-size:12px" title="<%= e.responseSummary %>"><%= e.responseSummary.slice(0, 50) %><%= e.responseSummary.length > 50 ? '…' : '' %></td>
+          <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Input tokens"><%= e.promptTokens?.toLocaleString() || '-' %></td>
+          <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Output tokens"><%= e.completionTokens?.toLocaleString() || '-' %></td>
+          <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Cached tokens"><%= e.cachedTokens ? e.cachedTokens.toLocaleString() : '-' %></td>
+          <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap"><%= e.duration %></td>
+          <td><span style="color:<%= e.success ? 'var(--green)' : 'var(--red)' %>"><%= e.success ? '✓' : '✕' %></span></td>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+<% } %>
+
+<style>
+.op-badge {
+  font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px;
+  text-transform:uppercase; letter-spacing:0.3px; white-space:nowrap;
+}
+.op-extract { background: rgba(88,166,255,0.15); color: var(--accent); }
+.op-score { background: rgba(63,185,80,0.15); color: var(--green); }
+.op-tailor { background: rgba(210,153,29,0.15); color: var(--yellow); }
+.op-compose { background: rgba(163,113,247,0.15); color: var(--purple); }
+.op-audit-content { background: rgba(248,81,73,0.12); color: var(--red); }
+.op-audit-visual { background: rgba(248,81,73,0.12); color: var(--orange); }
+.op-profile-edit { background: rgba(88,166,255,0.12); color: var(--accent); }
+</style>
+
+<script>
+  function filterTable(op) {
+    const rows = document.querySelectorAll('tbody tr');
+    const status = document.getElementById('status-filter').value;
+    for (const row of rows) {
+      const opCell = row.querySelector('.op-badge')?.textContent || '';
+      const statusCell = row.querySelector('td:last-child span')?.textContent || '';
+      const opMatch = !op || opCell === op;
+      const statusMatch = !status || (status === 'success' && statusCell === '✓') || (status === 'fail' && statusCell === '✕');
+      row.style.display = opMatch && statusMatch ? '' : 'none';
+    }
+  }
+  function filterStatus(status) {
+    const rows = document.querySelectorAll('tbody tr');
+    const op = document.getElementById('op-filter').value;
+    for (const row of rows) {
+      const opCell = row.querySelector('.op-badge')?.textContent || '';
+      const statusCell = row.querySelector('td:last-child span')?.textContent || '';
+      const opMatch = !op || opCell === op;
+      const statusMatch = !status || (status === 'success' && statusCell === '✓') || (status === 'fail' && statusCell === '✕');
+      row.style.display = opMatch && statusMatch ? '' : 'none';
+    }
+  }
+</script>
+
+<%- include('_foot') %>

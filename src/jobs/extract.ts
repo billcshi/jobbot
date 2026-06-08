@@ -61,11 +61,15 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
     const extracted = await extractWithLLM(html, job.url);
 
     db.prepare(
-      `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, status = 'extracted', updated_at = datetime('now') WHERE id = ?`,
     ).run(extracted.title, extracted.company, extracted.location, extracted.description, extracted.applyUrl, jobId);
 
-    logger.info(`Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`);
+    // Log event
+    db.prepare(
+      "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'extract', ?, ?, datetime('now'))",
+    ).run(jobId, `Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`, JSON.stringify({ title: extracted.title, company: extracted.company, location: extracted.location }));
 
+    logger.info(`Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`);
     return {
       jobId, url: job.url, atsType: job.ats_type,
       title: extracted.title, company: extracted.company, location: extracted.location,

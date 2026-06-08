@@ -32,12 +32,13 @@ export function addUrl(url: string): AddUrlResult {
     'INSERT INTO jobs (url, ats_type, status, discovered_at, updated_at) VALUES (?, ?, ?, datetime(\'now\'), datetime(\'now\'))',
   );
   const result = stmt.run(url, atsType, 'new');
+  const id = Number(result.lastInsertRowid);
 
-  logger.info(`Added job (id=${result.lastInsertRowid}, ats=${atsType}): ${url}`);
-  return {
-    id: Number(result.lastInsertRowid),
-    url,
-    atsType,
-    alreadyExisted: false,
-  };
+  // Log event
+  db.prepare(
+    "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'ingest', ?, ?, datetime('now'))",
+  ).run(id, `URL added: ${url}`, JSON.stringify({ ats_type: atsType }));
+
+  logger.info(`Added job (id=${id}, ats=${atsType}): ${url}`);
+  return { id, url, atsType, alreadyExisted: false };
 }

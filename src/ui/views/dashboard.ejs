@@ -9,6 +9,11 @@
   <% if (counts.B > 0) { %><div class="stat"><strong style="color:var(--accent)"><%= counts.B %></strong> B</div><% } %>
   <% if (counts.C > 0) { %><div class="stat"><strong style="color:var(--yellow)"><%= counts.C %></strong> C</div><% } %>
   <% if (counts.D > 0) { %><div class="stat"><strong style="color:var(--red)"><%= counts.D %></strong> D</div><% } %>
+  <% if (counts.D > 0) { %>
+    <div class="stat" style="cursor:pointer" onclick="deleteAllD()" title="Delete all D-tier jobs">
+      🗑️ Delete all D
+    </div>
+  <% } %>
 </div>
 
 <!-- filter bar -->
@@ -58,6 +63,7 @@
         <th>ATS</th>
         <th>Status</th>
         <th>URL</th>
+        <th style="width:30px"></th>
       </tr>
     </thead>
     <tbody>
@@ -71,6 +77,7 @@
           <td><%= job.ats_type %></td>
           <td><span class="status-badge"><%= helpers.statusLabel(job.status) %></span></td>
           <td><a href="<%= job.url %>" class="url-link" onclick="event.stopPropagation()" target="_blank" title="<%= job.url %>"><%= helpers.truncate(job.url, 35) %></a></td>
+          <td><button class="delete-btn" onclick="event.stopPropagation(); deleteJob(<%= job.id %>, '<%= (job.title || 'Untitled').replace(/'/g, "\\'") %>')" title="Delete">✕</button></td>
         </tr>
       <% } %>
     </tbody>
@@ -87,6 +94,47 @@
       url.searchParams.delete(key);
     }
     window.location = url.toString();
+  }
+
+  async function deleteJob(id, label) {
+    if (!confirm(`Delete job #${id}: "${label}"?\n\nThis is permanent and cannot be undone.`)) return;
+    const resp = await fetch(`/api/jobs/${id}/delete`, { method: 'POST' });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      const data = await resp.json();
+      alert(`Delete failed: ${data.error}`);
+    }
+  }
+
+  async function deleteAllD() {
+    if (!confirm('Delete ALL D-tier jobs?\n\nThis is permanent and cannot be undone.')) return;
+    const resp = await fetch('/api/jobs/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: 'D' }),
+    });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      const data = await resp.json();
+      alert(`Delete failed: ${data.error}`);
+    }
+  }
+
+  async function deleteByStatus(status, label) {
+    if (!confirm(`Delete ALL jobs with status "${label}"?\n\nThis is permanent and cannot be undone.`)) return;
+    const resp = await fetch('/api/jobs/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    if (resp.ok) {
+      window.location.reload();
+    } else {
+      const data = await resp.json();
+      alert(`Delete failed: ${data.error}`);
+    }
   }
 </script>
 

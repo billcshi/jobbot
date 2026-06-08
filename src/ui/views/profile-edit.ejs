@@ -1,0 +1,191 @@
+<%- include('_head', { title: profileLabel + ' — Profile' }) %>
+
+<a href="/profile" class="back-link">← Back to Profile</a>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+  <h1 style="font-size:20px;font-weight:600"><%= profileLabel %></h1>
+  <span style="font-size:12px;color:var(--text-dim)"><%= filePath %></span>
+</div>
+<p style="color:var(--text-muted);margin-bottom:20px;font-size:13px"><%= description %></p>
+
+<!-- mode tabs -->
+<div style="display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid var(--border)">
+  <button class="mode-tab active" id="tab-view" onclick="switchMode('view')">📖 View</button>
+  <button class="mode-tab" id="tab-edit" onclick="switchMode('edit')">✏️ Edit Manually</button>
+  <button class="mode-tab" id="tab-ai" onclick="switchMode('ai')">🤖 Edit with AI</button>
+</div>
+
+<!-- View mode -->
+<div id="mode-view" class="mode-panel">
+  <pre class="yaml-view"><%= yamlEscaped %></pre>
+</div>
+
+<!-- Manual edit mode -->
+<div id="mode-edit" class="mode-panel" style="display:none">
+  <textarea id="yaml-editor" style="width:100%;height:500px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:16px;font-family:'SF Mono','Cascadia Code',monospace;font-size:13px;line-height:1.5;resize:vertical"><%= yamlRaw %></textarea>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button class="btn-save" onclick="saveYaml()">💾 Save</button>
+    <span id="save-status" style="font-size:13px;align-self:center"></span>
+  </div>
+</div>
+
+<!-- AI edit mode -->
+<div id="mode-ai" class="mode-panel" style="display:none">
+  <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Describe what you want to change in natural language. The AI will update the YAML while preserving everything else.</p>
+  <div style="display:flex;gap:12px;margin-bottom:12px">
+    <textarea id="ai-instruction" placeholder="e.g., Add a new skill 'Kubernetes' to infrastructure, update my location to San Francisco, add a deal-breaker for 'defense' industry..." style="flex:1;height:100px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:inherit;font-size:13px;resize:vertical"></textarea>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+    <button class="btn-save" onclick="aiEdit()" id="ai-btn">🤖 Update with AI</button>
+    <span id="ai-status" style="font-size:13px"></span>
+  </div>
+  <div id="ai-preview" style="display:none">
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:8px">AI-generated changes (review before saving):</p>
+    <pre id="ai-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:16px;font-family:'SF Mono',monospace;font-size:13px;line-height:1.5;max-height:400px;overflow:auto;white-space:pre-wrap"></pre>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <button class="btn-save" onclick="applyAiChanges()">✅ Apply Changes</button>
+      <button class="btn-cancel" onclick="discardAiChanges()">Discard</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.mode-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.mode-tab:hover { color: var(--text); }
+.mode-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.mode-panel { animation: fadeIn 0.2s; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.yaml-view {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 20px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: auto;
+  max-height: 600px;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+.btn-save {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn-save:hover { filter: brightness(1.1); }
+.btn-cancel {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-cancel:hover { background: var(--bg-hover); }
+</style>
+
+<script>
+  const profileFile = '<%= profileFile %>';
+
+  function switchMode(mode) {
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + mode).classList.add('active');
+    document.querySelectorAll('.mode-panel').forEach(p => p.style.display = 'none');
+    document.getElementById('mode-' + mode).style.display = 'block';
+  }
+
+  async function saveYaml() {
+    const yaml = document.getElementById('yaml-editor').value;
+    const status = document.getElementById('save-status');
+    status.textContent = 'Saving...';
+    status.style.color = 'var(--yellow)';
+    try {
+      const resp = await fetch('/api/profile/' + profileFile, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        status.textContent = '✓ Saved';
+        status.style.color = 'var(--green)';
+      } else {
+        status.textContent = '✕ ' + (data.error || 'Save failed');
+        status.style.color = 'var(--red)';
+      }
+    } catch (err) {
+      status.textContent = '✕ ' + err.message;
+      status.style.color = 'var(--red)';
+    }
+  }
+
+  let aiResult = null;
+
+  async function aiEdit() {
+    const instruction = document.getElementById('ai-instruction').value.trim();
+    if (!instruction) { alert('Describe what you want to change.'); return; }
+
+    const status = document.getElementById('ai-status');
+    const btn = document.getElementById('ai-btn');
+    status.textContent = 'AI is thinking...';
+    status.style.color = 'var(--yellow)';
+    btn.disabled = true;
+
+    try {
+      const resp = await fetch('/api/profile/' + profileFile + '/ai-edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        aiResult = data.yaml;
+        document.getElementById('ai-output').textContent = data.yaml;
+        document.getElementById('ai-preview').style.display = 'block';
+        status.textContent = '✓ Review the changes below';
+        status.style.color = 'var(--green)';
+      } else {
+        status.textContent = '✕ ' + (data.error || 'AI edit failed');
+        status.style.color = 'var(--red)';
+      }
+    } catch (err) {
+      status.textContent = '✕ ' + err.message;
+      status.style.color = 'var(--red)';
+    }
+    btn.disabled = false;
+  }
+
+  function applyAiChanges() {
+    if (!aiResult) return;
+    document.getElementById('yaml-editor').value = aiResult;
+    document.getElementById('ai-preview').style.display = 'none';
+    document.getElementById('ai-instruction').value = '';
+    document.getElementById('ai-status').textContent = '';
+    aiResult = null;
+    switchMode('edit');
+  }
+
+  function discardAiChanges() {
+    document.getElementById('ai-preview').style.display = 'none';
+    document.getElementById('ai-status').textContent = '';
+    aiResult = null;
+  }
+</script>
+
+<%- include('_foot') %>

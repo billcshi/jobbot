@@ -38,23 +38,49 @@ if ! command -v pnpm &>/dev/null; then
 fi
 echo "  pnpm $(pnpm --version)"
 
-# ---- System dependencies (LaTeX) -------------------------------------------
+# ---- System dependencies (LaTeX + poppler + python3-pip) --------------------
 echo ""
-echo -e "${BOLD}[2/4] Installing LaTeX...${NC}"
+echo -e "${BOLD}[2/4] Installing system dependencies...${NC}"
 echo "  This may take a few minutes on first install."
 
-# Check if pdflatex is already installed
+PACKAGES_TO_INSTALL=""
+
+# Check pdflatex
 if command -v pdflatex &>/dev/null; then
   echo "  pdflatex already installed ($(pdflatex --version | head -1))"
 else
+  PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra"
+fi
+
+# Check pdftoppm (poppler-utils) — used for PDF-to-image in resume visual audit
+if command -v pdftoppm &>/dev/null; then
+  echo "  pdftoppm already installed ($(pdftoppm -v 2>&1 | head -1))"
+else
+  PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL poppler-utils"
+fi
+
+# Check python3-pip — used for PyMuPDF (PDF-to-image fallback)
+if command -v pip3 &>/dev/null; then
+  echo "  pip3 already installed ($(pip3 --version | head -1))"
+else
+  PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL python3-pip"
+fi
+
+if [ -n "$PACKAGES_TO_INSTALL" ]; then
   sudo apt-get update -qq
-  sudo apt-get install -y \
-    texlive-latex-base \
-    texlive-latex-recommended \
-    texlive-latex-extra \
-    texlive-fonts-recommended \
-    texlive-fonts-extra
-  echo -e "  ${GREEN}pdflatex installed${NC}"
+  # shellcheck disable=SC2086
+  sudo apt-get install -y $PACKAGES_TO_INSTALL
+  echo -e "  ${GREEN}System packages installed${NC}"
+fi
+
+# Install PyMuPDF for PDF-to-image conversion (visual audit fallback)
+if python3 -c "import fitz" 2>/dev/null; then
+  echo "  PyMuPDF already installed"
+else
+  pip3 install PyMuPDF --quiet --break-system-packages 2>/dev/null || \
+    pip3 install PyMuPDF --quiet 2>/dev/null || \
+    echo "  NOTE: PyMuPDF install skipped (optional, for visual audit)"
+  echo -e "  ${GREEN}PyMuPDF installed${NC}"
 fi
 
 # ---- Node.js dependencies --------------------------------------------------

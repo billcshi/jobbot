@@ -15,6 +15,14 @@ export function ensureLocalDir(): void {
     logger.info(`Created ${LOCAL_DIR}`);
   }
 
+  // Always ensure config.yaml exists (copy from template if missing)
+  const configPath = `${LOCAL_DIR}/config.yaml`;
+  const configTemplate = `${LOCAL_EXAMPLE_DIR}/config.yaml`;
+  if (!existsSync(configPath) && existsSync(configTemplate)) {
+    cpSync(configTemplate, configPath);
+    logger.info(`Created ${configPath} from template`);
+  }
+
   // Ensure runtime subdirectories exist (browser-data etc.)
   mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -28,5 +36,22 @@ export function initDb(): void {
 
   const db = getDb();
   db.exec(SCHEMA_SQL);
+
+  // Migrations: handle schema changes across versions
+  applyMigrations(db);
+
   logger.info(`Database initialized at ${DB_PATH}`);
+}
+
+/** Apply any pending schema migrations. */
+function applyMigrations(db: ReturnType<typeof getDb>): void {
+  // v0.3→v0.4: rename typst_path → tex_path
+  const cols = db.prepare('PRAGMA table_info(resume_versions)').all() as { name: string }[];
+  const hasTypst = cols.some((c) => c.name === 'typst_path');
+  const hasTex = cols.some((c) => c.name === 'tex_path');
+
+  if (hasTypst && !hasTex) {
+    logger.info('Migrating: resume_versions.typst_path → tex_path');
+    db.exec('ALTER TABLE resume_versions RENAME COLUMN typst_path TO tex_path');
+  }
 }

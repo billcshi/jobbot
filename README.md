@@ -39,6 +39,10 @@ sudo apt update && sudo apt install -y \
   texlive-fonts-recommended \
   texlive-fonts-extra
 
+# System: poppler-utils (for PDF-to-image conversion in visual audit)
+sudo apt install -y poppler-utils python3-pip
+pip3 install PyMuPDF --quiet --break-system-packages
+
 # Node.js
 pnpm install
 
@@ -46,7 +50,7 @@ pnpm install
 pnpm jobbot init-db
 ```
 
-### What each LaTeX package provides
+### What each system package provides
 
 | Package | Why needed |
 |---|---|
@@ -55,6 +59,8 @@ pnpm jobbot init-db
 | `texlive-latex-extra` | marvosym, fontaxes, more layout packages |
 | `texlive-fonts-recommended` | Core fonts, Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5** (icons), **lato** (body font) |
+| `poppler-utils` | **pdftoppm** — PDF → PNG for visual audit |
+| `python3-pip` + `PyMuPDF` | Python PDF-to-image fallback |
 
 ### Future dependencies (v1.0+)
 
@@ -145,16 +151,25 @@ cat local/profile/answers.yaml
 
 Everything Claude writes is based on what you said. Nothing is invented. You can review and tweak at any time.
 
-## Commands (v0)
+## Commands (v0.4)
 
 | Command | Description |
 |---|---|
-| `bash scripts/setup.sh` | One-command full setup (LaTeX + pnpm + init) |
+| `bash scripts/setup.sh` | One-command full setup (LaTeX + poppler + pnpm + init) |
 | `pnpm jobbot init-db` | Create `local/` (from template) + initialize SQLite schema |
-| `pnpm jobbot add-url <url>` | Add a job posting URL (detects ATS type, no scraping yet) |
-| `pnpm jobbot score` | Score all jobs against `local/profile/preferences.yaml` |
-| `pnpm jobbot list` | List all jobs in a table |
-| `pnpm jobbot list --tier A` | List only tier-A jobs |
+| `pnpm jobbot add-url <url>` | Add a job posting URL (detects ATS type) |
+| `pnpm jobbot extract [--job <id>]` | Fetch + LLM-extract job details |
+| `pnpm jobbot score` | Score all jobs via LLM against preferences |
+| `pnpm jobbot list [--tier <tier>]` | List all jobs in a table |
+| `pnpm jobbot delete --job <id> [--force]` | Delete a job |
+| `pnpm jobbot delete --tier <tier> [--force]` | Bulk delete by tier |
+| `pnpm jobbot run [--step extract\|score\|compose\|audit]` | Run pipeline (all or single step) |
+| `pnpm jobbot run --job <id>` | Full pipeline for one job |
+| `pnpm jobbot tailor --job <id>` | LLM resume tailoring (internal) |
+| `pnpm jobbot render --job <id>` | LaTeX → PDF rendering (internal) |
+| `pnpm jobbot compose --job <id>` | Tailor + render in one step |
+| `pnpm jobbot audit --job <id>` | Content + visual audit of rendered PDF |
+| `pnpm jobbot ui` | Start web dashboard at http://localhost:3000 |
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | Run TypeScript type-checking |
 
@@ -191,12 +206,15 @@ jobbot/
   src/                  TypeScript source (public, committed)
     cli.ts                CLI entry point
     db/                   Database schema, client, init
-    jobs/                 Add, extract, score, list, ATS detection
+    jobs/                 Add, extract, score, list, delete, run
+    jobs/extractors/      LLM-based job detail extraction (DeepSeek)
+    jobs/scorers/         LLM + deterministic job scoring
     resume/               Tailor, render (LaTeX → PDF), validate
+    ui/                   Express web UI server + EJS views
     apply/                Application orchestration + ATS adapters (future)
     email/                Gmail sync and classification (future)
     analytics/            Search reports (future)
-    utils/                YAML, logger, paths
+    utils/                YAML, logger, AI logger, paths
 
   resumes/
     master.tex            LaTeX resume template (public)
@@ -208,17 +226,16 @@ jobbot/
 ## Roadmap
 
 - [x] **v0** — CLI skeleton: init-db, add-url, score, list
-- [ ] **v0.1** — Scrape and extract job details from Greenhouse, Lever, Ashby
-- [ ] **v0.2** — LLM-based scoring using `prompts/score-job.md`
-- [ ] **v0.3** — Resume tailoring with `prompts/tailor-resume.md`
-- [ ] **v0.4** — LaTeX resume rendering (pdflatex)
-- [ ] **v0.5** — Cover letter generation (LaTeX)
+- [x] **v0.1** — Scrape and extract job details via DeepSeek LLM
+- [x] **v0.2** — LLM-based scoring using `prompts/score-job.md`
+- [x] **v0.3** — Web UI dashboard + pipeline visualization
+- [x] **v0.4** — Pipeline automation, delete, compose (tailor+render), audit, AI logging
 - [ ] **v1.0** — Playwright + Stagehand browser automation (dry-run default)
 - [ ] **v1.5** — Gmail sync and email classification
 - [ ] **v2.0** — Analytics dashboard and search reports
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · Vitest · Playwright (future) · Stagehand (future)
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
 
 Designed for use with **Claude Code** and other AI coding agents on **WSL2**.

@@ -1,0 +1,51 @@
+<%- include('_head', { title: 'Profile' }) %>
+
+<h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">Profile</h1>
+<p style="color:var(--text-muted);margin-bottom:24px;">Manage your candidate profile, preferences, and application answers. All data is stored in <code>local/profile/</code> and never committed.</p>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px">
+  <!-- Candidate -->
+  <div class="card">
+    <h2>👤 Candidate Profile</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Work history, education, skills, links. The source of truth for resume tailoring — never fabricated, only rearranged.</p>
+    <div class="detail-row"><span class="detail-label">File</span><span class="detail-value">local/profile/candidate.yaml</span></div>
+    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= candidateSize %></span></div>
+    <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= candidateSections.join(', ') %></span></div>
+    <a href="/profile/candidate" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
+  </div>
+
+  <!-- Preferences -->
+  <div class="card">
+    <h2>🎯 Preferences</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Job titles, locations, industries, deal-breakers, and scoring weights.</p>
+    <div class="detail-row"><span class="detail-label">File</span><span class="detail-value">local/profile/preferences.yaml</span></div>
+    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= prefsSize %></span></div>
+    <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= prefsSections.join(', ') %></span></div>
+    <a href="/profile/preferences" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
+  </div>
+
+  <!-- Answers -->
+  <div class="card">
+    <h2>📋 Application Answers</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Standard application questions: work authorization, demographic info, prior applications. Sensitive — never shared or uploaded.</p>
+    <div class="detail-row"><span class="detail-label">File</span><span class="detail-value">local/profile/answers.yaml</span></div>
+    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= answersSize %></span></div>
+    <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= answersSections.join(', ') %></span></div>
+    <a href="/profile/answers" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
+  </div>
+</div>
+
+<style>
+.btn-link {
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn-link:hover { filter: brightness(1.1); }
+</style>
+
+<%- include('_foot') %>

@@ -1,0 +1,16 @@
+# JobBot Local Configuration
+# This file is stored in local/config.yaml (gitignored, never committed).
+#
+# API keys are read from this file first, then fall back to environment variables.
+# At minimum, set api_keys.deepseek — it's used for extraction, scoring, tailoring,
+# content audit, and profile AI editing.
+
+api_keys:
+  deepseek: ""      # DeepSeek API key (https://platform.deepseek.com/api_keys)
+                     # Used for: extract, score, tailor, audit-content, profile-edit
+                     # Env fallback: ANTHROPIC_AUTH_TOKEN
+
+  anthropic: ""     # Anthropic (Claude) API key (https://console.anthropic.com/)
+                     # Used for: audit-visual (Claude Vision reviews rendered PDF)
+                     # Optional — visual audit skips gracefully if not set
+                     # Env fallback: ANTHROPIC_API_KEY

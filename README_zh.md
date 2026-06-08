@@ -39,6 +39,10 @@ sudo apt update && sudo apt install -y \
   texlive-fonts-recommended \
   texlive-fonts-extra
 
+# 系统依赖：poppler-utils（用于 PDF 转图片，视觉审核）
+sudo apt install -y poppler-utils python3-pip
+pip3 install PyMuPDF --quiet --break-system-packages
+
 # Node.js 依赖
 pnpm install
 
@@ -46,7 +50,7 @@ pnpm install
 pnpm jobbot init-db
 ```
 
-### 各 LaTeX 包的作用
+### 各系统包的作用
 
 | 包名 | 用途 |
 |---|---|
@@ -55,6 +59,8 @@ pnpm jobbot init-db
 | `texlive-latex-extra` | marvosym、fontaxes、更多布局包 |
 | `texlive-fonts-recommended` | 核心字体、Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5**（图标）、**lato**（正文字体） |
+| `poppler-utils` | **pdftoppm** — PDF → PNG 用于视觉审核 |
+| `python3-pip` + `PyMuPDF` | Python PDF 转图片备选方案 |
 
 ### 未来依赖（v1.0+）
 
@@ -145,16 +151,23 @@ cat local/profile/answers.yaml
 
 Claude 所写的所有内容都基于你提供的信息。不会编造任何东西。你可以随时查看和调整。
 
-## 命令 (v0)
+## 命令 (v0.4)
 
 | 命令 | 说明 |
 |---|---|
-| `bash scripts/setup.sh` | 一键完整安装（LaTeX + pnpm + 初始化） |
+| `bash scripts/setup.sh` | 一键完整安装（LaTeX + poppler + pnpm + 初始化） |
 | `pnpm jobbot init-db` | 创建 `local/`（从模板）+ 初始化 SQLite 数据库结构 |
-| `pnpm jobbot add-url <url>` | 添加职位链接（自动检测 ATS 类型，暂不抓取内容） |
-| `pnpm jobbot score` | 根据 `local/profile/preferences.yaml` 对所有职位打分 |
-| `pnpm jobbot list` | 以表格形式列出所有职位 |
-| `pnpm jobbot list --tier A` | 仅列出 A 级职位 |
+| `pnpm jobbot add-url <url>` | 添加职位链接（自动检测 ATS 类型） |
+| `pnpm jobbot extract [--job <id>]` | 抓取 + LLM 提取职位详情 |
+| `pnpm jobbot score` | LLM 打分（对照偏好设置） |
+| `pnpm jobbot list [--tier <tier>]` | 以表格形式列出所有职位 |
+| `pnpm jobbot delete --job <id> [--force]` | 删除单个职位 |
+| `pnpm jobbot delete --tier <tier> [--force]` | 按等级批量删除 |
+| `pnpm jobbot run [--step extract\|score\|compose\|audit]` | 运行流水线（全部或单步） |
+| `pnpm jobbot run --job <id>` | 对单个职位运行完整流水线 |
+| `pnpm jobbot compose --job <id>` | 定制 + 渲染一步完成 |
+| `pnpm jobbot audit --job <id>` | 内容 + 视觉审核已渲染 PDF |
+| `pnpm jobbot ui` | 启动 Web 面板 http://localhost:3000 |
 | `pnpm test` | 运行测试套件 |
 | `pnpm typecheck` | TypeScript 类型检查 |
 
@@ -208,11 +221,10 @@ jobbot/
 ## 路线图
 
 - [x] **v0** — CLI 骨架：init-db、add-url、score、list
-- [ ] **v0.1** — 从 Greenhouse、Lever、Ashby 抓取并提取职位详情
-- [ ] **v0.2** — 基于 `prompts/score-job.md` 的 LLM 打分
-- [ ] **v0.3** — 基于 `prompts/tailor-resume.md` 的简历定制
-- [ ] **v0.4** — LaTeX 简历渲染（pdflatex）
-- [ ] **v0.5** — 求职信生成（LaTeX）
+- [x] **v0.1** — 通过 DeepSeek LLM 抓取并提取职位详情
+- [x] **v0.2** — 基于 `prompts/score-job.md` 的 LLM 打分
+- [x] **v0.3** — Web UI 面板 + 流水线可视化
+- [x] **v0.4** — 流水线自动化、删除、组合（定制+渲染）、审核、AI 日志
 - [ ] **v1.0** — Playwright + Stagehand 浏览器自动化（默认干运行）
 - [ ] **v1.5** — Gmail 同步与邮件分类
 - [ ] **v2.0** — 分析面板与求职报告

@@ -92,11 +92,11 @@
 \resumeSubHeadingListStart
   {{#education}}
   \resumeSubheading
-    {{{school}}}{{{start}}} -- {{{end}}}
+    {{{school}}}{{{date_range}}}
     {{{degree}}}{{{location}}}
     {{#notes}}
     \resumeItemListStart
-      \resumeItem{\textbf{Relevant coursework:} {{notes}}}
+      \resumeItem{{{notes}}}
     \resumeItemListEnd
     {{/notes}}
   {{/education}}
@@ -107,7 +107,7 @@
 \resumeSubHeadingListStart
   {{#experience}}
   \resumeSubheading
-    {{{company}}}{{{start}}} -- {{end_display}}
+    {{{company}}}{{{date_range}}}
     {{{title}}}{{{location}}}
     \resumeItemListStart
       {{#highlights}}

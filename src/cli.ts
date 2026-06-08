@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * JobBot CLI — v0.2
+ * JobBot CLI — v0.4
  *
  * Commands:
  *   init-db                     Create/update the SQLite database
@@ -15,6 +15,7 @@ import { addUrl } from './jobs/add-url.js';
 import { extractJob, extractAll } from './jobs/extract.js';
 import { scoreAll } from './jobs/score.js';
 import { listJobs } from './jobs/list.js';
+import { deleteJob, deleteByTier, deleteByStatus } from './jobs/delete.js';
 import { startUi } from './ui/server.js';
 import { logger } from './utils/logger.js';
 
@@ -27,6 +28,14 @@ Usage:
   pnpm jobbot extract [--job <id>]
   pnpm jobbot score
   pnpm jobbot list [--tier <tier>]
+  pnpm jobbot delete --job <id> [--force]
+  pnpm jobbot delete --tier <tier> [--force]
+  pnpm jobbot delete --status <status> [--force]
+  pnpm jobbot run [--step extract|score|compose|audit] [--job <id>]
+  pnpm jobbot tailor --job <id>
+  pnpm jobbot render --job <id>
+  pnpm jobbot compose --job <id>
+  pnpm jobbot audit --job <id>
   pnpm jobbot ui
 `);
   process.exit(1);
@@ -125,6 +134,162 @@ async function main(): Promise<void> {
     case 'list': {
       const tier = flags['tier'];
       listJobs(tier ? { tier } : {});
+      break;
+    }
+
+    case 'delete': {
+      const jobId = flags['job'];
+      const tier = flags['tier'];
+      const status = flags['status'];
+      const force = flags['force'] === 'true';
+
+      if (jobId) {
+        try {
+          const result = deleteJob(Number(jobId));
+          console.log(`Deleted job #${result.jobs[0]?.id}: "${result.jobs[0]?.title || 'Untitled'}"`);
+        } catch (err) {
+          logger.error(err instanceof Error ? err.message : String(err));
+          process.exit(1);
+        }
+      } else if (tier) {
+        if (!force) {
+          const db = (await import('./db/client.js')).getDb();
+          const count = (db.prepare(
+            'SELECT COUNT(*) as count FROM jobs WHERE tier = ?',
+          ).get(tier.toUpperCase()) as { count: number }).count;
+          if (count === 0) {
+            console.log(`No jobs found with tier ${tier.toUpperCase()}.`);
+            break;
+          }
+          console.log(`About to delete ${count} job(s) with tier ${tier.toUpperCase()}.`);
+          console.log('Add --force to skip confirmation.');
+          break;
+        }
+        const result = deleteByTier(tier);
+        console.log(`Deleted ${result.deleted} job(s) with tier ${tier.toUpperCase()}.`);
+      } else if (status) {
+        if (!force) {
+          const db = (await import('./db/client.js')).getDb();
+          const count = (db.prepare(
+            'SELECT COUNT(*) as count FROM jobs WHERE status = ?',
+          ).get(status) as { count: number }).count;
+          if (count === 0) {
+            console.log(`No jobs found with status "${status}".`);
+            break;
+          }
+          console.log(`About to delete ${count} job(s) with status "${status}".`);
+          console.log('Add --force to skip confirmation.');
+          break;
+        }
+        const result = deleteByStatus(status);
+        console.log(`Deleted ${result.deleted} job(s) with status "${status}".`);
+      } else {
+        logger.error('delete requires one of: --job <id>, --tier <tier>, --status <status>');
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'run': {
+      const step = flags['step'];
+      const jobId = flags['job'];
+      if (jobId) {
+        const { runJob } = await import('./jobs/run.js');
+        await runJob(Number(jobId));
+      } else if (step === 'extract') {
+        const { runExtract } = await import('./jobs/run.js');
+        await runExtract();
+      } else if (step === 'score') {
+        const { runScore } = await import('./jobs/run.js');
+        await runScore();
+      } else if (step === 'compose') {
+        const { runCompose } = await import('./jobs/run.js');
+        await runCompose();
+      } else if (step === 'audit') {
+        const { runAudit } = await import('./jobs/run.js');
+        await runAudit();
+      } else {
+        const { runAll } = await import('./jobs/run.js');
+        await runAll();
+      }
+      break;
+    }
+
+    case 'tailor': {
+      const jobId = flags['job'];
+      if (!jobId) {
+        logger.error('tailor requires --job <id>');
+        process.exit(1);
+      }
+      const { tailorJob } = await import('./jobs/tailor.js');
+      const result = await tailorJob(Number(jobId));
+      if (result.success) {
+        console.log(`Tailored resume for job #${jobId}: ${result.versionName}`);
+      } else {
+        logger.error(`Tailor failed: ${result.error}`);
+      }
+      break;
+    }
+
+    case 'render': {
+      const jobId = flags['job'];
+      if (!jobId) {
+        logger.error('render requires --job <id>');
+        process.exit(1);
+      }
+      const { renderJob } = await import('./jobs/render.js');
+      const result = await renderJob(Number(jobId));
+      if (result.success) {
+        console.log(`PDF: ${result.pdfPath}`);
+      } else {
+        logger.error(`Render failed: ${result.error}`);
+      }
+      break;
+    }
+
+    case 'audit': {
+      const jobId = flags['job'];
+      if (!jobId) {
+        logger.error('audit requires --job <id>');
+        process.exit(1);
+      }
+      const { auditJob } = await import('./jobs/audit.js');
+      const result = await auditJob(Number(jobId));
+      if (result.success) {
+        console.log(`\nAudit complete — Overall: ${result.overallScore}/100`);
+        console.log(`Content issues: ${result.contentIssues.length}, Visual issues: ${result.visualIssues.length}`);
+      } else {
+        logger.error(`Audit failed: ${result.error}`);
+      }
+      break;
+    }
+
+    case 'cover-letter': {
+      const jobId = flags['job'];
+      if (!jobId) { logger.error('cover-letter requires --job <id>'); process.exit(1); }
+      const { generateCoverLetter } = await import('./jobs/cover-letter.js');
+      const result = await generateCoverLetter(Number(jobId));
+      if (result.success) {
+        console.log(`Cover letter PDF: ${result.pdfPath}`);
+      } else {
+        logger.error(`Cover letter failed: ${result.error}`);
+      }
+      break;
+    }
+
+    case 'compose': {
+      const jobId = flags['job'];
+      if (!jobId) {
+        logger.error('compose requires --job <id>');
+        process.exit(1);
+      }
+      const { composeJob } = await import('./jobs/compose.js');
+      const result = await composeJob(Number(jobId));
+      if (result.success) {
+        console.log(`PDF: ${result.pdfPath}`);
+      } else {
+        logger.error(`Compose failed: ${result.error}`);
+      }
       break;
     }
 

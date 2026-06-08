@@ -285,6 +285,73 @@
     .empty { text-align: center; padding: 48px; color: var(--text-dim); }
     .empty p { margin-top: 8px; font-size: 14px; }
 
+    /* ----- delete button -------------------------------------------------- */
+    .delete-btn {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      transition: all 0.15s;
+    }
+    .delete-btn:hover {
+      color: var(--red);
+      border-color: rgba(248,81,73,0.3);
+      background: rgba(248,81,73,0.1);
+    }
+    .delete-link {
+      color: var(--red);
+      text-decoration: none;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .delete-link:hover { text-decoration: underline; }
+    .confirm-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .confirm-overlay.open { display: flex; }
+    .confirm-box {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      max-width: 400px;
+      width: 90%;
+    }
+    .confirm-box h3 { margin-bottom: 12px; color: var(--red); }
+    .confirm-box p { margin-bottom: 16px; color: var(--text-muted); font-size: 14px; }
+    .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-cancel {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn-danger {
+      background: var(--red);
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .btn-cancel:hover { background: var(--bg-hover); }
+    .btn-danger:hover { filter: brightness(1.1); }
+
     /* ----- URL link ------------------------------------------------------ */
     .url-link { color: var(--accent); text-decoration: none; font-size: 12px; }
     .url-link:hover { text-decoration: underline; }
@@ -298,8 +365,11 @@
 </head>
 <body>
   <nav>
-    <a href="/" class="logo">JobBot <span>v0.3</span></a>
+    <a href="/" class="logo">JobBot <span>v0.4</span></a>
     <a href="/">Dashboard</a>
     <a href="/pipeline">Pipeline</a>
+    <a href="/events">Events</a>
+    <a href="/profile">Profile</a>
+    <a href="/ai-log">AI Log</a>
   </nav>
   <div class="container">
