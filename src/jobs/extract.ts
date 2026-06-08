@@ -35,15 +35,20 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
       headers: { 'User-Agent': 'JobBot/0.2 (personal job-search assistant)' },
     });
     if (!res.ok) {
+      const errMsg = `HTTP ${res.status}`;
+      db.prepare('UPDATE jobs SET score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(`Extract failed: ${errMsg}`, jobId);
       return {
         jobId, url: job.url, atsType: job.ats_type,
         title: '', company: '', location: '',
-        success: false, error: `HTTP ${res.status}`,
+        success: false, error: errMsg,
       };
     }
     html = await res.text();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    db.prepare('UPDATE jobs SET score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(`Extract failed: ${msg}`, jobId);
     return {
       jobId, url: job.url, atsType: job.ats_type,
       title: '', company: '', location: '',
@@ -69,6 +74,8 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`LLM extraction failed for job ${jobId}: ${msg}`);
+    db.prepare('UPDATE jobs SET score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(`Extract failed: ${msg}`, jobId);
     return {
       jobId, url: job.url, atsType: job.ats_type,
       title: '', company: '', location: '',

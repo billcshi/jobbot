@@ -1,0 +1,93 @@
+<%- include('_head', { title: 'Dashboard' }) %>
+
+<h1 style="font-size:20px;font-weight:600;margin-bottom:20px;">Job Pipeline</h1>
+
+<!-- stats bar -->
+<div class="stats-bar">
+  <div class="stat"><strong><%= totalJobs %></strong> total</div>
+  <% if (counts.A > 0) { %><div class="stat"><strong style="color:var(--green)"><%= counts.A %></strong> A</div><% } %>
+  <% if (counts.B > 0) { %><div class="stat"><strong style="color:var(--accent)"><%= counts.B %></strong> B</div><% } %>
+  <% if (counts.C > 0) { %><div class="stat"><strong style="color:var(--yellow)"><%= counts.C %></strong> C</div><% } %>
+  <% if (counts.D > 0) { %><div class="stat"><strong style="color:var(--red)"><%= counts.D %></strong> D</div><% } %>
+</div>
+
+<!-- filter bar -->
+<div class="filter-bar">
+  <label>Tier:
+    <select onchange="filter('tier', this.value)">
+      <option value="">All</option>
+      <option value="A" <%= filters.tier === 'A' ? 'selected' : '' %>>A — Top Match</option>
+      <option value="B" <%= filters.tier === 'B' ? 'selected' : '' %>>B — Good Match</option>
+      <option value="C" <%= filters.tier === 'C' ? 'selected' : '' %>>C — Possible</option>
+      <option value="D" <%= filters.tier === 'D' ? 'selected' : '' %>>D — Low / Deal-breaker</option>
+    </select>
+  </label>
+  <label>Status:
+    <select onchange="filter('status', this.value)">
+      <option value="">All</option>
+      <option value="new" <%= filters.status === 'new' ? 'selected' : '' %>>New</option>
+      <option value="extracted" <%= filters.status === 'extracted' ? 'selected' : '' %>>Extracted</option>
+      <option value="scored" <%= filters.status === 'scored' ? 'selected' : '' %>>Scored</option>
+    </select>
+  </label>
+  <label>Sort:
+    <select onchange="filter('sort', this.value)">
+      <option value="score" <%= filters.sort === 'score' ? 'selected' : '' %>>Score (high first)</option>
+      <option value="company" <%= filters.sort === 'company' ? 'selected' : '' %>>Company (A-Z)</option>
+      <option value="title" <%= filters.sort === 'title' ? 'selected' : '' %>>Title (A-Z)</option>
+      <option value="date" <%= filters.sort === 'date' ? 'selected' : '' %>>Date added (newest)</option>
+    </select>
+  </label>
+</div>
+
+<!-- job table -->
+<% if (jobs.length === 0) { %>
+  <div class="empty">
+    <p style="font-size:32px;">📭</p>
+    <p>No jobs match the current filters.</p>
+  </div>
+<% } else { %>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Tier</th>
+        <th>Score</th>
+        <th>Company</th>
+        <th>Title</th>
+        <th>ATS</th>
+        <th>Status</th>
+        <th>URL</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% for (const job of jobs) { %>
+        <tr class="clickable" onclick="location.href='/jobs/<%= job.id %>'">
+          <td><%= job.id %></td>
+          <td><span class="badge <%= helpers.tierClass(job.tier) %>"><%= helpers.tierLabel(job.tier) %></span></td>
+          <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(job.score) %></td>
+          <td><%= helpers.truncate(job.company, 25) %></td>
+          <td style="max-width:250px"><%= helpers.truncate(job.title, 40) %></td>
+          <td><%= job.ats_type %></td>
+          <td><span class="status-badge"><%= helpers.statusLabel(job.status) %></span></td>
+          <td><a href="<%= job.url %>" class="url-link" onclick="event.stopPropagation()" target="_blank" title="<%= job.url %>"><%= helpers.truncate(job.url, 35) %></a></td>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <p style="margin-top:12px;font-size:12px;color:var(--text-dim)"><%= jobs.length %> job(s)</p>
+<% } %>
+
+<script>
+  function filter(key, value) {
+    const url = new URL(window.location);
+    if (value) {
+      url.searchParams.set(key, value);
+    } else {
+      url.searchParams.delete(key);
+    }
+    window.location = url.toString();
+  }
+</script>
+
+<%- include('_foot') %>

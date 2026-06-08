@@ -1,0 +1,115 @@
+<%- include('_head', { title: job.title || ('Job #' + job.id) }) %>
+
+<a href="/" class="back-link">← Back to Dashboard</a>
+
+<!-- job header -->
+<div class="job-header">
+  <h1><%= job.title || 'Untitled' %></h1>
+  <p class="meta">
+    <strong><%= job.company || 'Unknown Company' %></strong>
+    <% if (job.location) { %> · <%= job.location %><% } %>
+  </p>
+</div>
+
+<!-- score + pipeline -->
+<div class="grid-2">
+  <!-- score card -->
+  <div class="card">
+    <h2>Score</h2>
+    <% if (job.score != null) { %>
+      <div class="score-display">
+        <div class="score-number" style="color:<%=
+          job.tier === 'A' ? 'var(--green)' :
+          job.tier === 'B' ? 'var(--accent)' :
+          job.tier === 'C' ? 'var(--yellow)' :
+          'var(--red)'
+        %>"><%= helpers.scoreFmt(job.score) %></div>
+        <span class="badge <%= helpers.tierClass(job.tier) %>" style="font-size:14px;padding:4px 12px"><%= helpers.tierLabel(job.tier) %></span>
+      </div>
+      <% if (reasonParagraphs.length > 0) { %>
+        <div class="score-reason">
+          <% for (const p of reasonParagraphs) { %>
+            <p><%= p.trim() %></p>
+          <% } %>
+        </div>
+      <% } %>
+    <% } else { %>
+      <p style="color:var(--text-dim)">Not scored yet. Run <code style="background:var(--bg);padding:2px 6px;border-radius:3px;">pnpm jobbot score</code>.</p>
+    <% } %>
+  </div>
+
+  <!-- pipeline card -->
+  <div class="card">
+    <h2>Pipeline Stage</h2>
+    <%
+      const stages = [
+        { key: 'new', label: 'New' },
+        { key: 'extracted', label: 'Extracted' },
+        { key: 'scored', label: 'Scored' },
+        { key: 'tailored', label: 'Tailored' },
+        { key: 'applied', label: 'Applied' },
+      ];
+      const currentIdx = stages.findIndex(s => s.key === job.status);
+    %>
+    <div class="pipeline-steps">
+      <% for (let i = 0; i < stages.length; i++) { %>
+        <% if (i > 0) { %>
+          <div class="pipeline-connector <%= i <= currentIdx ? 'done' : '' %>"></div>
+        <% } %>
+        <div class="pipeline-step <%= i < currentIdx ? 'done' : (i === currentIdx ? 'current' : '') %>">
+          <div class="dot"></div>
+          <span><%= stages[i].label %></span>
+        </div>
+      <% } %>
+    </div>
+    <p style="margin-top:16px;font-size:13px;color:var(--text-muted)">
+      Current: <strong style="color:var(--text)"><%= helpers.statusLabel(job.status) %></strong>
+    </p>
+  </div>
+</div>
+
+<!-- job details + description -->
+<div class="grid-2">
+  <!-- details -->
+  <div class="card">
+    <h2>Details</h2>
+    <div class="detail-row">
+      <span class="detail-label">ATS</span>
+      <span class="detail-value"><%= job.ats_type %></span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Source URL</span>
+      <span class="detail-value"><a href="<%= job.url %>" target="_blank"><%= helpers.truncate(job.url, 60) %></a></span>
+    </div>
+    <% if (job.apply_url) { %>
+    <div class="detail-row">
+      <span class="detail-label">Apply URL</span>
+      <span class="detail-value"><a href="<%= job.apply_url %>" target="_blank"><%= helpers.truncate(job.apply_url, 60) %></a></span>
+    </div>
+    <% } %>
+    <div class="detail-row">
+      <span class="detail-label">Added</span>
+      <span class="detail-value"><%= job.discovered_at %></span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Updated</span>
+      <span class="detail-value"><%= job.updated_at %></span>
+    </div>
+    <div class="detail-row">
+      <span class="detail-label">Job ID</span>
+      <span class="detail-value">#<%= job.id %></span>
+    </div>
+  </div>
+
+  <!-- description -->
+  <div class="card">
+    <h2>Job Description</h2>
+    <% if (job.description) { %>
+      <div class="description-box"><%= job.description %></div>
+    <% } else { %>
+      <p style="color:var(--text-dim)">No description extracted yet. Run <code style="background:var(--bg);padding:2px 6px;border-radius:3px;">pnpm jobbot extract --job <%= job.id %></code>.</p>
+    <% } %>
+  </div>
+</div>
+
+<%- include('_foot') %>

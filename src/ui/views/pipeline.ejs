@@ -1,0 +1,298 @@
+<%- include('_head', { title: 'Pipeline' }) %>
+
+<style>
+  .pipeline-flow { position: relative; padding-left: 48px; }
+  .pipeline-flow::before {
+    content: ''; position: absolute; left: 23px; top: 8px; bottom: 8px;
+    width: 2px; background: var(--border);
+  }
+  .stage {
+    position: relative; margin-bottom: 32px; padding: 20px 24px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: 8px; transition: border-color 0.2s;
+  }
+  .stage:hover { border-color: var(--accent); }
+  .stage.planned { opacity: 0.5; }
+  .stage.planned:hover { opacity: 0.8; }
+  .stage::before {
+    content: ''; position: absolute; left: -33px; top: 28px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--border); border: 2px solid var(--bg); z-index: 1;
+  }
+  .stage.active::before {
+    background: var(--accent); box-shadow: 0 0 0 4px rgba(88,166,255,0.2);
+  }
+  .stage.done::before { background: var(--green); }
+  .stage-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+  }
+  .stage-number {
+    font-size: 12px; font-weight: 700; color: var(--accent);
+    background: rgba(88,166,255,0.12); padding: 3px 8px; border-radius: 4px;
+    white-space: nowrap;
+  }
+  .stage-number.planned-tag {
+    color: var(--text-dim); background: rgba(110,118,129,0.12);
+  }
+  .stage-title { font-size: 16px; font-weight: 600; color: var(--text); }
+  .stage-cmd {
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    color: var(--text-dim); background: var(--bg); padding: 2px 8px;
+    border-radius: 4px; margin-left: auto;
+  }
+  .comp-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .comp {
+    padding: 10px 14px; border-radius: 6px; font-size: 12px; text-align: center;
+    min-width: 90px; transition: all 0.15s;
+  }
+  .comp-title {
+    font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.3px; margin-bottom: 4px;
+  }
+  .comp-detail { color: var(--text-muted); font-size: 11px; }
+  .comp-detail a { color: var(--accent); }
+  .comp-url    { background: rgba(163,113,247,0.10); border: 1px solid rgba(163,113,247,0.25); }
+  .comp-parse  { background: rgba(210,153,29,0.10);  border: 1px solid rgba(210,153,29,0.25); }
+  .comp-db     { background: rgba(63,185,80,0.10);   border: 1px solid rgba(63,185,80,0.25); }
+  .comp-fetch  { background: rgba(88,166,255,0.10);  border: 1px solid rgba(88,166,255,0.25); }
+  .comp-llm    { background: rgba(248,81,73,0.10);   border: 1px solid rgba(248,81,73,0.25); }
+  .comp-render { background: rgba(210,153,29,0.10);  border: 1px solid rgba(210,153,29,0.25); }
+  .comp-apply  { background: rgba(163,113,247,0.10); border: 1px solid rgba(163,113,247,0.25); }
+  .comp-output { background: rgba(63,185,80,0.08);   border: 1px solid rgba(63,185,80,0.20); }
+  .comp-arrow {
+    display: flex; align-items: center; color: var(--text-dim);
+    font-size: 18px; padding: 0 4px;
+  }
+
+  /* stage footer */
+  .stage-foot {
+    font-size: 12px; margin-top: 12px; padding-top: 10px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .stage-foot strong { color: var(--text); }
+  .metric { display: flex; align-items: center; gap: 3px; font-size: 11px; }
+  .metric .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot-ok  { background: var(--green); }
+  .dot-wait { background: var(--yellow); }
+  .dot-fail { background: var(--red); }
+
+  .toggle-badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
+    user-select: none; transition: background 0.15s;
+  }
+  .toggle-badge:hover { filter: brightness(1.2); }
+  .toggle-badge.wait { background: rgba(210,153,29,0.12); color: var(--yellow); }
+  .toggle-badge.fail { background: rgba(248,81,73,0.12); color: var(--red); }
+  .toggle-badge.empty { background: rgba(110,118,129,0.10); color: var(--text-dim); cursor: default; }
+  .toggle-badge.empty:hover { filter: none; }
+
+  /* expandable job list */
+  .job-queue {
+    display: none; margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid var(--border); font-size: 12px;
+    max-height: 220px; overflow-y: auto;
+  }
+  .job-queue.open { display: block; }
+  .job-queue-item {
+    display: flex; align-items: center; gap: 8px; padding: 4px 0;
+    color: var(--text-muted); border-bottom: 1px solid rgba(48,54,61,0.5);
+  }
+  .job-queue-item:last-child { border-bottom: none; }
+  .job-queue-item .jid { color: var(--text-dim); min-width: 28px; }
+  .job-queue-item a { color: var(--accent); text-decoration: none; }
+  .job-queue-item a:hover { text-decoration: underline; }
+  .job-queue-item .tag {
+    font-size: 10px; padding: 1px 5px; border-radius: 3px;
+    background: var(--bg); color: var(--text-dim);
+  }
+  .job-queue-item .err {
+    font-size: 10px; color: var(--red); max-width: 400px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .source-label {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 16px; padding-left: 48px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .source-label::before {
+    content: ''; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--purple); border: 2px solid var(--bg); flex-shrink: 0;
+  }
+  .source-icons { color: var(--text-muted); font-size: 13px; }
+  .page-header { margin-bottom: 28px; }
+  .page-header h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .page-header p { color: var(--text-muted); font-size: 14px; }
+</style>
+
+<div class="page-header">
+  <h1>Data Pipeline</h1>
+  <p>How job postings flow from URL to application-ready resume. Click badges to inspect each queue.</p>
+</div>
+
+<div class="source-label">
+  <strong>JOB BOARDS</strong>
+  <span class="source-icons">Greenhouse · Lever · Ashby · LinkedIn · Workday</span>
+</div>
+
+<div class="pipeline-flow">
+
+  <!-- Step 1: Ingest ------------------------------------------------------ -->
+  <div class="stage active">
+    <div class="stage-header">
+      <span class="stage-number">STEP 1</span>
+      <span class="stage-title">Ingest</span>
+      <span class="stage-cmd">pnpm jobbot add-url &lt;url&gt;</span>
+    </div>
+    <div class="comp-flow">
+      <div class="comp comp-url"><div class="comp-title">Parse URL</div><div class="comp-detail">validate format</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-parse"><div class="comp-title">detect-ats.ts</div><div class="comp-detail">greenhouse · lever<br>ashby · workday<br>linkedin · generic</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-db"><div class="comp-title">INSERT INTO jobs</div><div class="comp-detail">url, ats_type<br>status='new'</div></div>
+    </div>
+    <div class="stage-foot">
+      <strong><%= totalJobs %></strong> total ·
+      <span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= ingestDone %></strong> moved on</span>
+      <% if (ingestQueued.length > 0) { %>
+        <span class="toggle-badge wait" onclick="toggleQueue('q-ingest-queued')">⏳ <%= ingestQueued.length %> queued</span>
+      <% } else { %>
+        <span class="toggle-badge empty">⏳ 0 queued</span>
+      <% } %>
+      <% if (ingestFailed.length > 0) { %>
+        <span class="toggle-badge fail" onclick="toggleQueue('q-ingest-failed')">✕ <%= ingestFailed.length %> failed</span>
+      <% } else { %>
+        <span class="toggle-badge empty">✕ 0 failed</span>
+      <% } %>
+    </div>
+    <!-- queued list -->
+    <% if (ingestQueued.length > 0) { %>
+    <div class="job-queue" id="q-ingest-queued">
+      <p style="color:var(--text-dim);margin-bottom:6px">Awaiting extraction:</p>
+      <% for (const j of ingestQueued) { %>
+        <div class="job-queue-item">
+          <span class="jid">#<%= j.id %></span>
+          <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 70) %>…</a>
+          <span class="tag"><%= j.ats_type %></span>
+        </div>
+      <% } %>
+    </div>
+    <% } %>
+    <!-- failed list -->
+    <% if (ingestFailed.length > 0) { %>
+    <div class="job-queue" id="q-ingest-failed">
+      <p style="color:var(--red);margin-bottom:6px">Extraction failed:</p>
+      <% for (const j of ingestFailed) { %>
+        <div class="job-queue-item">
+          <span class="jid">#<%= j.id %></span>
+          <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 50) %>…</a>
+          <span class="err"><%= j.score_reason %></span>
+        </div>
+      <% } %>
+    </div>
+    <% } %>
+  </div>
+
+  <!-- Step 2: Extract ----------------------------------------------------- -->
+  <div class="stage <%= extractDone > 0 ? 'done' : '' %>">
+    <div class="stage-header">
+      <span class="stage-number">STEP 2</span>
+      <span class="stage-title">Extract</span>
+      <span class="stage-cmd">pnpm jobbot extract [--job &lt;id&gt;]</span>
+    </div>
+    <div class="comp-flow">
+      <div class="comp comp-fetch"><div class="comp-title">fetch(url)</div><div class="comp-detail">HTTP GET</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-parse"><div class="comp-title">htmlToText()</div><div class="comp-detail">strip scripts<br>nav, styles</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-llm"><div class="comp-title">DeepSeek LLM</div><div class="comp-detail">prompts/extract-job.md</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-db"><div class="comp-title">UPDATE jobs</div><div class="comp-detail">title, company<br>location, description<br>apply_url</div></div>
+    </div>
+    <div class="stage-foot">
+      <strong><%= extractDone + extractQueued.length %></strong> received ·
+      <span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= extractDone %></strong> moved on</span>
+      <% if (extractQueued.length > 0) { %>
+        <span class="toggle-badge wait" onclick="toggleQueue('q-extract-queued')">⏳ <%= extractQueued.length %> queued</span>
+      <% } else { %>
+        <span class="toggle-badge empty">⏳ 0 queued</span>
+      <% } %>
+      <span class="toggle-badge empty">✕ 0 failed</span>
+    </div>
+    <% if (extractQueued.length > 0) { %>
+    <div class="job-queue" id="q-extract-queued">
+      <p style="color:var(--text-dim);margin-bottom:6px">Extracted, awaiting scoring:</p>
+      <% for (const j of extractQueued) { %>
+        <div class="job-queue-item">
+          <span class="jid">#<%= j.id %></span>
+          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+        </div>
+      <% } %>
+    </div>
+    <% } %>
+  </div>
+
+  <!-- Step 3: Score ------------------------------------------------------- -->
+  <div class="stage <%= scoredCount > 0 ? 'done' : '' %>">
+    <div class="stage-header">
+      <span class="stage-number">STEP 3</span>
+      <span class="stage-title">Score</span>
+      <span class="stage-cmd">pnpm jobbot score</span>
+    </div>
+    <div class="comp-flow">
+      <div class="comp comp-fetch"><div class="comp-title">Job Data</div><div class="comp-detail">title · company<br>location · description</div></div>
+      <span class="comp-arrow">+</span>
+      <div class="comp comp-parse"><div class="comp-title">Preferences</div><div class="comp-detail">candidate.yaml<br>preferences.yaml</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-llm"><div class="comp-title">DeepSeek LLM</div><div class="comp-detail">prompts/score-job.md<br>6 dimensions<br>deal-breaker check</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-db"><div class="comp-title">UPDATE jobs</div><div class="comp-detail">score (0.0–1.0)<br>tier (A/B/C/D)<br>score_reason</div></div>
+    </div>
+    <div class="stage-foot">
+      <strong><%= scoredCount %></strong> scored ·
+      <% if (tierCounts.A > 0) { %><span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= tierCounts.A %> A</strong></span><% } %>
+      <% if (tierCounts.B > 0) { %><span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--accent)"><%= tierCounts.B %> B</strong></span><% } %>
+      <% if (tierCounts.C > 0) { %><span class="metric"><span class="dot dot-wait"></span> <strong style="color:var(--yellow)"><%= tierCounts.C %> C</strong></span><% } %>
+    </div>
+  </div>
+
+  <!-- Step 4: List & Filter ----------------------------------------------- -->
+  <div class="stage done">
+    <div class="stage-header">
+      <span class="stage-number">STEP 4</span>
+      <span class="stage-title">List &amp; Filter</span>
+      <span class="stage-cmd">pnpm jobbot list [--tier A]</span>
+    </div>
+    <div class="comp-flow">
+      <div class="comp comp-db"><div class="comp-title">SELECT from jobs</div><div class="comp-detail">ORDER BY score DESC<br>WHERE tier = ?</div></div>
+      <span class="comp-arrow">→</span>
+      <div class="comp comp-output"><div class="comp-title">STDOUT / Web</div><div class="comp-detail">formatted columns<br>or <a href="/">Web Dashboard</a></div></div>
+    </div>
+  </div>
+
+  <!-- Step 5–7: Planned --------------------------------------------------- -->
+  <% [{ ver: 'v0.4', num: 'STEP 5', title: 'Tailor', cmd: 'pnpm jobbot tailor --job <id> (planned)' },
+      { ver: 'v0.4', num: 'STEP 6', title: 'Render', cmd: 'pnpm jobbot render --job <id> (planned)' },
+      { ver: 'v1.0', num: 'STEP 7', title: 'Apply', cmd: 'pnpm jobbot apply --job <id> (planned)' }].forEach(function(s) { %>
+    <div class="stage planned">
+      <div class="stage-header">
+        <span class="stage-number planned-tag"><%= s.ver %></span>
+        <span class="stage-title"><%= s.title %></span>
+        <span class="stage-cmd"><%= s.cmd %></span>
+      </div>
+      <p style="color:var(--text-dim);font-size:13px">Coming in <%= s.ver %>.</p>
+    </div>
+  <% }); %>
+
+</div>
+
+<script>
+  function toggleQueue(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('open');
+  }
+</script>
+
+<%- include('_foot') %>

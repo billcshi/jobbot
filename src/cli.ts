@@ -15,6 +15,7 @@ import { addUrl } from './jobs/add-url.js';
 import { extractJob, extractAll } from './jobs/extract.js';
 import { scoreAll } from './jobs/score.js';
 import { listJobs } from './jobs/list.js';
+import { startUi } from './ui/server.js';
 import { logger } from './utils/logger.js';
 
 function usage(): never {
@@ -26,6 +27,7 @@ Usage:
   pnpm jobbot extract [--job <id>]
   pnpm jobbot score
   pnpm jobbot list [--tier <tier>]
+  pnpm jobbot ui
 `);
   process.exit(1);
 }
@@ -123,6 +125,12 @@ async function main(): Promise<void> {
     case 'list': {
       const tier = flags['tier'];
       listJobs(tier ? { tier } : {});
+      break;
+    }
+
+    case 'ui': {
+      startUi();
+      console.log('Press Ctrl+C to stop.');
       break;
     }
 
