@@ -258,24 +258,10 @@
     </div>
   </div>
 
-  <!-- Step 4: List & Filter ----------------------------------------------- -->
-  <div class="stage done">
-    <div class="stage-header">
-      <span class="stage-number">STEP 4</span>
-      <span class="stage-title">List &amp; Filter</span>
-      <span class="stage-cmd">pnpm jobbot list [--tier A]</span>
-    </div>
-    <div class="comp-flow">
-      <div class="comp comp-db"><div class="comp-title">SELECT from jobs</div><div class="comp-detail">ORDER BY score DESC<br>WHERE tier = ?</div></div>
-      <span class="comp-arrow">→</span>
-      <div class="comp comp-output"><div class="comp-title">STDOUT / Web</div><div class="comp-detail">formatted columns<br>or <a href="/">Web Dashboard</a></div></div>
-    </div>
-  </div>
-
-  <!-- Step 5–7: Planned --------------------------------------------------- -->
-  <% [{ ver: 'v0.4', num: 'STEP 5', title: 'Tailor', cmd: 'pnpm jobbot tailor --job <id> (planned)' },
-      { ver: 'v0.4', num: 'STEP 6', title: 'Render', cmd: 'pnpm jobbot render --job <id> (planned)' },
-      { ver: 'v1.0', num: 'STEP 7', title: 'Apply', cmd: 'pnpm jobbot apply --job <id> (planned)' }].forEach(function(s) { %>
+  <!-- Step 4–6: Planned --------------------------------------------------- -->
+  <% [{ ver: 'v0.4', num: 'STEP 4', title: 'Tailor', cmd: 'pnpm jobbot tailor --job <id> (planned)' },
+      { ver: 'v0.4', num: 'STEP 5', title: 'Render', cmd: 'pnpm jobbot render --job <id> (planned)' },
+      { ver: 'v1.0', num: 'STEP 6', title: 'Apply', cmd: 'pnpm jobbot apply --job <id> (planned)' }].forEach(function(s) { %>
     <div class="stage planned">
       <div class="stage-header">
         <span class="stage-number planned-tag"><%= s.ver %></span>

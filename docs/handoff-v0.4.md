@@ -94,11 +94,11 @@ Tailor a LaTeX resume for a specific job and render it to PDF.
 
 ### Pipeline Stage Extension
 
-With tailoring and rendering, the pipeline grows to 7 stages:
+With tailoring and rendering, the pipeline grows to 6 stages:
 
 ```
-Ingest → Extract → Score → Tailor → Render → List       → Apply
-                                                         (v1.0)
+Ingest → Extract → Score → Tailor → Render → Apply
+                                              (v1.0)
 ```
 
 The pipeline web page should show these new stages and count jobs at each one.
