@@ -2,7 +2,7 @@ import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
 import { PROJECT_ROOT, RESUMES_DIR } from '../utils/paths.js';
-import { getDeepseekKey, getAnthropicKey } from '../utils/config.js';
+import { getDeepseekKey, getAnthropicKey, getDeepseekModel } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
@@ -88,7 +88,7 @@ async function auditContent(
   apiKey: string,
 ): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
   const requestBody = {
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     messages: [
       { role: 'system', content: AUDIT_PROMPT },
       {
@@ -142,7 +142,7 @@ async function auditContent(
 
     logAiCall({
       operation: 'audit-content',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Content audit: ${resumeText.length} chars resume vs ${jobDescription.length} chars job desc`,
@@ -157,7 +157,7 @@ async function auditContent(
     const msg = err instanceof Error ? err.message : String(err);
     logAiCall({
       operation: 'audit-content',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: 'Content audit',

@@ -1,7 +1,7 @@
 import { getDb } from '../db/client.js';
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR, CANDIDATE_PATH } from '../utils/paths.js';
-import { getDeepseekKey } from '../utils/config.js';
+import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
@@ -46,8 +46,10 @@ interface LlmTailorOutput {
  * @param jobId Job to tailor for
  * @param auditFeedback Optional JSON string from a previous audit failure.
  *   When provided, it's injected into the prompt so the LLM can fix specific issues.
+ * @param variant Optional resume variant name (e.g., "backend", "full-stack").
+ *   When provided, the LLM tailors the resume with that focus.
  */
-export async function tailorJob(jobId: number, auditFeedback?: string): Promise<TailorResult> {
+export async function tailorJob(jobId: number, auditFeedback?: string, variant?: string): Promise<TailorResult> {
   const db = getDb();
   const job = db.prepare(
     'SELECT id, title, company, location, description FROM jobs WHERE id = ?',
@@ -92,6 +94,11 @@ export async function tailorJob(jobId: number, auditFeedback?: string): Promise<
   const userMessage = [
     jobInfo,
     '',
+    variant && variant !== 'general' ? [
+      '## Resume Variant',
+      `Use the "${variant}" resume variant. Focus on experience and skills relevant to ${variant} roles.`,
+      '',
+    ].join('\n') : '',
     '## Candidate Profile',
     '```yaml',
     candidateYaml,
@@ -108,7 +115,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string): Promise<
   ].filter(Boolean).join('\n');
 
   const requestBody = {
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     messages: [
       { role: 'system', content: TAILOR_PROMPT },
       { role: 'user', content: userMessage },
@@ -147,7 +154,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string): Promise<
 
     logAiCall({
       operation: 'tailor',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Tailor resume for job #${jobId} "${job.title}" at ${job.company}${auditFeedback ? ' (audit retry)' : ''}`,
@@ -161,7 +168,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string): Promise<
     logger.error(`Tailor LLM failed for job ${jobId}: ${msg}`);
     logAiCall({
       operation: 'tailor',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Tailor resume for job #${jobId}`,

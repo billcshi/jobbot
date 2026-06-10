@@ -1,5 +1,6 @@
 import { getDb } from '../db/client.js';
 import { extractWithLLM } from './extractors/llm.js';
+import { writeLLMSalary, writeLLMSkills } from './market-data.js';
 import { logger } from '../utils/logger.js';
 
 export interface ExtractResult {
@@ -63,6 +64,24 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
     db.prepare(
       `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, status = 'extracted', updated_at = datetime('now') WHERE id = ?`,
     ).run(extracted.title, extracted.company, extracted.location, extracted.description, extracted.applyUrl, jobId);
+
+    // Write LLM-extracted salary and skills to market_data
+    if (extracted.salary) {
+      try {
+        writeLLMSalary(jobId, extracted.salary, extracted.title, extracted.location);
+        logger.debug(`Salary written for job #${jobId}`);
+      } catch (err) {
+        logger.warn(`Failed to write salary for job #${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (extracted.skills.length > 0) {
+      try {
+        writeLLMSkills(jobId, extracted.skills);
+        logger.debug(`${extracted.skills.length} skill(s) written for job #${jobId}`);
+      } catch (err) {
+        logger.warn(`Failed to write skills for job #${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     // Log event
     db.prepare(

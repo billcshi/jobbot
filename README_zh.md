@@ -1,8 +1,17 @@
 # JobBot
 
-AI 原生的个人求职助手。**质量优先，而非数量。**
+**Web-UI 个人求职助手。** AI 原生，质量优先，而非数量。
 
-JobBot 专为 Claude Code（及其他 AI 编程助手）而设计。你与 AI 对话——AI 会帮你填写个人资料、给职位打分、定制简历，并（最终）填写申请表。一切默认干运行。
+JobBot 是一个本地 Web 应用（Express + EJS），帮助你管理求职的每个阶段——从发现职位到生成定制的 LaTeX 简历。专为 Claude Code 而设计：与 AI 对话，它会帮你填写个人资料、给职位打分、定制简历，未来还会自动填写申请表。一切默认干运行。
+
+**启动 Web UI：**
+
+```bash
+pnpm jobbot ui
+# 打开 http://localhost:3000
+```
+
+Web UI 提供仪表板分析图表、流水线管理、批量添加链接、职位搜索发现、AI 辅助个人资料编辑（并排差异视图）、求职信生成、AI 调用日志等功能。CLI 命令保留用于脚本和自动化。
 
 ## 快速开始
 
@@ -151,23 +160,40 @@ cat local/profile/answers.yaml
 
 Claude 所写的所有内容都基于你提供的信息。不会编造任何东西。你可以随时查看和调整。
 
-## 命令 (v0.4)
+## 命令 (v0.5)
+
+### Web UI（主要界面）
+
+| 命令 | 说明 |
+|---|---|
+| `pnpm jobbot ui` | **启动 Web 面板** http://localhost:3000 |
+
+Web UI 提供：带分析图表的仪表板、流水线管理、批量添加链接、职位搜索发现、带薪资/技能展示和交互式流水线追踪的职位详情、AI 辅助个人资料编辑（并排差异视图）、求职信生成、AI 调用日志和事件时间线。
+
+### CLI 命令
 
 | 命令 | 说明 |
 |---|---|
 | `bash scripts/setup.sh` | 一键完整安装（LaTeX + poppler + pnpm + 初始化） |
 | `pnpm jobbot init-db` | 创建 `local/`（从模板）+ 初始化 SQLite 数据库结构 |
-| `pnpm jobbot add-url <url>` | 添加职位链接（自动检测 ATS 类型） |
+| `pnpm jobbot add-url <url> [url2 ...]` | 添加一个或多个职位链接（自动检测 ATS 类型） |
+| `pnpm jobbot discover --query <关键词> [--location <城市>] [--source <平台>] [--ingest]` | 搜索招聘网站上的新职位 |
 | `pnpm jobbot extract [--job <id>]` | 抓取 + LLM 提取职位详情 |
 | `pnpm jobbot score` | LLM 打分（对照偏好设置） |
 | `pnpm jobbot list [--tier <tier>]` | 以表格形式列出所有职位 |
+| `pnpm jobbot market-data [--key <前缀>]` | 查看提取的市场情报 |
 | `pnpm jobbot delete --job <id> [--force]` | 删除单个职位 |
 | `pnpm jobbot delete --tier <tier> [--force]` | 按等级批量删除 |
+| `pnpm jobbot delete --status <status> [--force]` | 按状态批量删除 |
 | `pnpm jobbot run [--step extract\|score\|compose\|audit]` | 运行流水线（全部或单步） |
 | `pnpm jobbot run --job <id>` | 对单个职位运行完整流水线 |
+| `pnpm jobbot tailor --job <id>` | LLM 简历定制（内部） |
+| `pnpm jobbot render --job <id>` | LaTeX → PDF 渲染（内部） |
 | `pnpm jobbot compose --job <id>` | 定制 + 渲染一步完成 |
+| `pnpm jobbot cover-letter --job <id>` | 通过 LLM 生成求职信 |
 | `pnpm jobbot audit --job <id>` | 内容 + 视觉审核已渲染 PDF |
-| `pnpm jobbot ui` | 启动 Web 面板 http://localhost:3000 |
+| `pnpm jobbot schedule --once` | 运行一次流水线 |
+| `pnpm jobbot schedule --interval <分钟>` | 按间隔定时运行流水线 |
 | `pnpm test` | 运行测试套件 |
 | `pnpm typecheck` | TypeScript 类型检查 |
 
@@ -225,12 +251,13 @@ jobbot/
 - [x] **v0.2** — 基于 `prompts/score-job.md` 的 LLM 打分
 - [x] **v0.3** — Web UI 面板 + 流水线可视化
 - [x] **v0.4** — 流水线自动化、删除、组合（定制+渲染）、审核、AI 日志
+- [x] **v0.5** — 职位发现、批量添加链接、市场情报、仪表板分析图表、简历变体、求职信语气、定时运行
 - [ ] **v1.0** — Playwright + Stagehand 浏览器自动化（默认干运行）
 - [ ] **v1.5** — Gmail 同步与邮件分类
 - [ ] **v2.0** — 分析面板与求职报告
 
 ## 技术栈
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML 配置 · LaTeX · Vitest · Playwright（未来） · Stagehand（未来）
+TypeScript · pnpm · SQLite (better-sqlite3) · Express · EJS · YAML 配置 · LaTeX · DeepSeek API（v4-pro，可配置模型）· Vitest · Playwright（未来） · Stagehand（未来）
 
 专为 **Claude Code** 及其他 AI 编程助手设计，运行于 **WSL2**。

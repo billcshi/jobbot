@@ -1,5 +1,5 @@
 /**
- * JobBot Web UI — v0.4
+ * JobBot Web UI — v0.5
  *
  * A simple local-only Express server that reads from SQLite and renders
  * HTML pages for browsing the job-search pipeline.
@@ -14,8 +14,10 @@ import path from 'node:path';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { getDb } from '../db/client.js';
 import { deleteJob, deleteByTier, deleteByStatus } from '../jobs/delete.js';
+import { addUrl } from '../jobs/add-url.js';
+import { extractSalaryRanges } from '../jobs/market-data.js';
 import { PROJECT_ROOT, LOCAL_DIR, RESUMES_DIR, CANDIDATE_PATH, PREFERENCES_PATH, ANSWERS_PATH } from '../utils/paths.js';
-import { getDeepseekKey } from '../utils/config.js';
+import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
@@ -164,11 +166,29 @@ app.get('/', (req, res) => {
 
   const totalJobs = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;
 
+  // Pipeline stage counts for funnel
+  const stageCounts = {
+    ingested: totalJobs,
+    extracted: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE title IS NOT NULL').get() as { c: number }).c,
+    scored: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE score IS NOT NULL').get() as { c: number }).c,
+    composed: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status IN ('composed','audited')").get() as { c: number }).c,
+    audited: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'audited'").get() as { c: number }).c,
+  };
+
+  // Top companies
+  const topCompanies = db.prepare(`
+    SELECT company, COUNT(*) as count FROM jobs
+    WHERE company IS NOT NULL AND company != ''
+    GROUP BY company ORDER BY count DESC LIMIT 8
+  `).all() as { company: string; count: number }[];
+
   res.render('dashboard', {
     title: 'Dashboard',
     jobs,
     counts,
     totalJobs,
+    stageCounts,
+    topCompanies,
     filters: { tier: tierFilter, status: statusFilter, sort },
     helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt },
   });
@@ -223,6 +243,58 @@ app.get('/jobs/:id', (req, res) => {
     'SELECT id, event_type, description, metadata, created_at FROM events WHERE job_id = ? ORDER BY created_at ASC',
   ).all(jobId) as EventRow[];
 
+  // Extract salary for this job: prefer LLM-extracted data from market_data,
+  // fall back to regex on the description.
+  let jobSalaries: { low: number; high: number; raw: string }[] = [];
+  let jobSkills: string[] = [];
+  try {
+    // Check for LLM-extracted data first (source = job_<id>)
+    const llmSalaryRow = db.prepare(
+      "SELECT value FROM job_market_data WHERE source = ? AND key LIKE 'salary_range.%' LIMIT 1",
+    ).get(`job_${jobId}`) as { value: string } | undefined;
+    const llmSkillRows = db.prepare(
+      "SELECT key FROM job_market_data WHERE source = ? AND key LIKE 'common_req.%'",
+    ).all(`job_${jobId}`) as { key: string }[];
+
+    if (llmSalaryRow) {
+      // Parse LLM-extracted salary value like "$120k–$180k"
+      const match = llmSalaryRow.value.match(/\$(\d+)k[–\-]\$(\d+)k/);
+      if (match) {
+        jobSalaries.push({ low: parseInt(match[1]!, 10) * 1000, high: parseInt(match[2]!, 10) * 1000, raw: llmSalaryRow.value });
+      }
+    }
+    jobSkills = llmSkillRows.map((r) => r.key.replace('common_req.', '').replace(/_/g, ' '));
+  } catch { /* ignore */ }
+
+  // Fallback: regex extraction if no LLM data found
+  if (jobSalaries.length === 0 && job.description) {
+    try {
+      jobSalaries = extractSalaryRanges(job.description);
+    } catch { /* ignore */ }
+  }
+
+  // Load market data relevant to this job
+  interface MarketDataRow { key: string; value: string; source: string; confidence: number; sample_size: number; }
+  let salaryMarket: MarketDataRow[] = [];
+  let skillMarket: MarketDataRow[] = [];
+  let titleMarket: MarketDataRow[] = [];
+
+  try {
+    salaryMarket = db.prepare(
+      "SELECT * FROM job_market_data WHERE key LIKE 'salary_range.%' ORDER BY sample_size DESC LIMIT 8",
+    ).all() as MarketDataRow[];
+    skillMarket = db.prepare(
+      "SELECT * FROM job_market_data WHERE key LIKE 'common_req.%' ORDER BY CAST(value AS REAL) DESC LIMIT 15",
+    ).all() as MarketDataRow[];
+    // Titles similar to this job
+    if (job.title) {
+      const titleNorm = job.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_').slice(0, 60);
+      titleMarket = db.prepare(
+        "SELECT * FROM job_market_data WHERE key LIKE 'title_freq.%' AND key LIKE ? ORDER BY CAST(value AS REAL) DESC LIMIT 6",
+      ).all(`%${titleNorm.slice(0, 20)}%`) as MarketDataRow[];
+    }
+  } catch { /* market data table might not exist yet if no jobs scored */ }
+
   res.render('job-detail', {
     title: job.title || `Job #${job.id}`,
     job,
@@ -233,8 +305,19 @@ app.get('/jobs/:id', (req, res) => {
     hasCoverLetter,
     clPdfPath,
     RESUMES_DIR,
+    jobSalaries,
+    jobSkills,
+    salaryMarket,
+    skillMarket,
+    titleMarket,
     helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt },
   });
+});
+
+// ----- routes: add-urls page -----------------------------------------------
+
+app.get('/add-urls', (_req, res) => {
+  res.render('add-urls', { title: 'Add URLs' });
 });
 
 // ----- routes: pipeline ----------------------------------------------------
@@ -555,7 +638,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   ].join('\n');
 
   const requestBody = {
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     messages: [
       { role: 'system', content: prompt },
       { role: 'user', content: [
@@ -588,7 +671,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
       const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
       logAiCall({
         operation: 'profile-edit',
-        model: 'deepseek-chat',
+        model: getDeepseekModel(),
         provider: 'deepseek',
         endpoint: 'https://api.deepseek.com/v1/chat/completions',
         requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
@@ -611,7 +694,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
 
     logAiCall({
       operation: 'profile-edit',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
@@ -626,7 +709,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
     const msg = err instanceof Error ? err.message : String(err);
     logAiCall({
       operation: 'profile-edit',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Edit ${file}.yaml`,
@@ -798,6 +881,9 @@ app.post('/api/run/step', async (req, res) => {
             const r = await scoreJobWithLLM(job);
             db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
               .run(r.score, r.tier, r.reason, jobId);
+            // Extract market data after scoring
+            const { extractMarketData: emdStep } = await import('../jobs/market-data.js');
+            emdStep(job as { id: number; title: string | null; location: string | null; description: string | null });
           } catch (err) {
             const { scoreJobDeterministic } = await import('../jobs/scorers/deterministic.js');
             const prefs: any = { preferred_titles: [], preferred_locations: { remote: false, cities: [] }, preferred_companies: [], preferred_industries: [], deal_breakers: { description: '', keywords: [] }, weights: {}, tiers: { A: 0.8, B: 0.65, C: 0.5, D: 0 } };
@@ -826,11 +912,17 @@ app.post('/api/run/step', async (req, res) => {
 
 app.post('/api/jobs/:id/cover-letter', async (req, res) => {
   const jobId = Number(req.params.id);
+  const { tone } = (req.body || {}) as { tone?: string };
+  const validTones = ['professional', 'enthusiastic', 'concise'] as const;
+  const resolvedTone = tone && validTones.includes(tone as typeof validTones[number])
+    ? (tone as typeof validTones[number])
+    : 'professional';
+
   try {
     const { generateCoverLetter } = await import('../jobs/cover-letter.js');
-    const result = await generateCoverLetter(jobId);
+    const result = await generateCoverLetter(jobId, resolvedTone);
     if (result.success) {
-      res.json({ ok: true, pdfPath: result.pdfPath });
+      res.json({ ok: true, pdfPath: result.pdfPath, tone: resolvedTone });
     } else {
       res.status(500).json({ error: result.error });
     }
@@ -898,6 +990,8 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
               : await scoreJobWithLLM(j);
             db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
               .run(r.score, r.tier, r.reason, jobId);
+            const { extractMarketData: emdRegen } = await import('../jobs/market-data.js');
+            emdRegen(j as { id: number; title: string | null; location: string | null; description: string | null });
           } catch (err) {
             const { scoreJobDeterministic } = await import('../jobs/scorers/deterministic.js');
             const prefs: any = { preferred_titles: [], preferred_locations: {remote:false,cities:[]}, preferred_companies: [], preferred_industries: [], deal_breakers: {description:'',keywords:[]}, weights: {}, tiers: {A:0.8,B:0.65,C:0.5,D:0} };
@@ -923,6 +1017,178 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
       logger.error(`Regenerate ${step} for #${jobId} failed`, err);
     }
   })();
+});
+
+// ----- routes: batch add API ------------------------------------------------
+
+app.post('/api/jobs/add-urls', (req, res) => {
+  const { urls } = (req.body || {}) as { urls?: string[] };
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    res.status(400).json({ error: 'Missing urls array in request body' });
+    return;
+  }
+
+  const results = urls.map((url: string) => {
+    if (typeof url !== 'string' || !url.trim()) {
+      return { url, error: 'Invalid URL', added: false };
+    }
+    try {
+      const r = addUrl(url.trim());
+      return {
+        url: r.url,
+        id: r.id,
+        atsType: r.atsType,
+        alreadyExisted: r.alreadyExisted,
+        added: true,
+      };
+    } catch (err) {
+      return { url, error: err instanceof Error ? err.message : String(err), added: false };
+    }
+  });
+
+  const addedCount = results.filter((r: { added: boolean; alreadyExisted?: boolean }) => r.added && !r.alreadyExisted).length;
+  const duplicateCount = results.filter((r: { added: boolean; alreadyExisted?: boolean }) => r.added && r.alreadyExisted).length;
+  const errorCount = results.filter((r: { added: boolean }) => !r.added).length;
+
+  res.json({ ok: true, added: addedCount, duplicates: duplicateCount, errors: errorCount, results });
+});
+
+app.post('/api/jobs/add-urls-and-run', async (req, res) => {
+  if (runState.running) {
+    res.status(409).json({ error: 'Pipeline is already running', ...runState });
+    return;
+  }
+
+  const { urls } = (req.body || {}) as { urls?: string[] };
+  if (!urls || !Array.isArray(urls) || urls.length === 0) {
+    res.status(400).json({ error: 'Missing urls array in request body' });
+    return;
+  }
+
+  const results = urls.map((url: string) => {
+    if (typeof url !== 'string' || !url.trim()) {
+      return { url, error: 'Invalid URL', added: false };
+    }
+    try {
+      const r = addUrl(url.trim());
+      return {
+        url: r.url,
+        id: r.id,
+        atsType: r.atsType,
+        alreadyExisted: r.alreadyExisted,
+        added: true,
+      };
+    } catch (err) {
+      return { url, error: err instanceof Error ? err.message : String(err), added: false };
+    }
+  });
+
+  const addedCount = results.filter((r: { added: boolean; alreadyExisted?: boolean }) => r.added && !r.alreadyExisted).length;
+  const duplicateCount = results.filter((r: { added: boolean; alreadyExisted?: boolean }) => r.added && r.alreadyExisted).length;
+  const errorCount = results.filter((r: { added: boolean }) => !r.added).length;
+
+  // Start pipeline in background
+  resetRunState();
+  runState.running = true;
+  runState.startedAt = new Date().toISOString();
+
+  res.status(202).json({
+    ok: true,
+    message: `${addedCount} added, ${duplicateCount} duplicates, ${errorCount} errors. Pipeline starting...`,
+    added: addedCount,
+    duplicates: duplicateCount,
+    errors: errorCount,
+    results,
+  });
+
+  // Run full pipeline in background
+  (async () => {
+    try {
+      const { runAll: runAllPipeline } = await import('../jobs/run.js');
+      await runAllPipeline();
+      runState.stage = 'complete';
+      runState.message = 'Full pipeline complete';
+    } catch (err) {
+      runState.message = err instanceof Error ? err.message : String(err);
+      runState.stage = 'idle';
+      logger.error('Pipeline run failed', err);
+    } finally {
+      runState.running = false;
+    }
+  })();
+});
+
+// ----- routes: schedule API ------------------------------------------------
+
+app.post('/api/schedule/start', async (req, res) => {
+  const { interval } = (req.body || {}) as { interval?: number };
+  if (!interval || typeof interval !== 'number' || interval < 1) {
+    res.status(400).json({ error: 'Requires interval in minutes (>= 1)' });
+    return;
+  }
+  try {
+    const { startSchedule: ss } = await import('../jobs/schedule.js');
+    ss(interval);
+    res.json({ ok: true, message: `Scheduled every ${interval} minute(s)` });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post('/api/schedule/stop', async (_req, res) => {
+  try {
+    const { stopSchedule: ssStop } = await import('../jobs/schedule.js');
+    ssStop();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get('/api/schedule/status', async (_req, res) => {
+  try {
+    const { isScheduleActive } = await import('../jobs/schedule.js');
+    res.json({ active: isScheduleActive() });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ----- routes: market data API ---------------------------------------------
+
+app.get('/api/market-data', async (_req, res) => {
+  const keyPrefix = typeof _req.query.key === 'string' ? _req.query.key : undefined;
+  try {
+    const { getMarketData } = await import('../jobs/market-data.js');
+    const data = getMarketData(keyPrefix);
+    res.json({ ok: true, data });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ----- routes: discover API ------------------------------------------------
+
+app.get('/api/discover', async (req, res) => {
+  const query = typeof req.query.query === 'string' ? req.query.query : '';
+  const location = typeof req.query.location === 'string' ? req.query.location : undefined;
+  const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+
+  if (!query) {
+    res.status(400).json({ error: 'Missing query parameter' });
+    return;
+  }
+
+  try {
+    const { discoverJobs } = await import('../jobs/discover.js');
+    const results = await discoverJobs({ query, location, sources: source ? [source as 'greenhouse' | 'lever' | 'ashby' | 'linkedin'] : undefined });
+    const sources = [...new Set(results.map((r: { source: string }) => r.source))];
+    res.json({ ok: true, results, sources });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
 });
 
 // ----- routes: delete API (POST-based for Express 5 compat) ---------------

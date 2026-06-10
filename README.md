@@ -1,8 +1,17 @@
 # JobBot
 
-AI-native personal job-search assistant. **Quality over quantity.**
+**Web-UI personal job-search assistant.** AI-native, quality over quantity.
 
-JobBot is built to work with Claude Code (and other AI coding agents). You talk to the AI — it populates your profile, scores jobs, tailors resumes, and (eventually) fills out applications. Everything defaults to dry-run.
+JobBot is a local web application (Express + EJS) that helps you manage every stage of a job search — from discovering listings to generating tailored LaTeX resumes. Designed to be used with Claude Code: talk to the AI, and it populates your profile, scores jobs, tailors resumes, and will eventually fill out applications. Everything defaults to dry-run.
+
+**Start the web UI:**
+
+```bash
+pnpm jobbot ui
+# Open http://localhost:3000
+```
+
+The web UI provides dashboard analytics, pipeline management, batch URL adding, job board discovery, profile editing with AI assistance (side-by-side diff view), cover letter generation, AI call logging, and more. CLI commands are available for scripting and automation.
 
 ## Quick Setup
 
@@ -151,25 +160,40 @@ cat local/profile/answers.yaml
 
 Everything Claude writes is based on what you said. Nothing is invented. You can review and tweak at any time.
 
-## Commands (v0.4)
+## Commands (v0.5)
+
+### Web UI (primary interface)
+
+| Command | Description |
+|---|---|
+| `pnpm jobbot ui` | **Start web dashboard** at http://localhost:3000 |
+
+The web UI provides: dashboard with analytics charts, pipeline management, batch URL adding, job board discovery, job detail with salary/skills display and interactive pipeline tracker, profile editing with AI assistance (side-by-side diff view), cover letter generation, AI call logging, and event timeline.
+
+### CLI Commands
 
 | Command | Description |
 |---|---|
 | `bash scripts/setup.sh` | One-command full setup (LaTeX + poppler + pnpm + init) |
 | `pnpm jobbot init-db` | Create `local/` (from template) + initialize SQLite schema |
-| `pnpm jobbot add-url <url>` | Add a job posting URL (detects ATS type) |
+| `pnpm jobbot add-url <url> [url2 ...]` | Add one or more job posting URLs (detects ATS type) |
+| `pnpm jobbot discover --query <terms> [--location <city>] [--source <board>] [--ingest]` | Search job boards for new postings |
 | `pnpm jobbot extract [--job <id>]` | Fetch + LLM-extract job details |
 | `pnpm jobbot score` | Score all jobs via LLM against preferences |
 | `pnpm jobbot list [--tier <tier>]` | List all jobs in a table |
+| `pnpm jobbot market-data [--key <prefix>]` | View extracted market intelligence |
 | `pnpm jobbot delete --job <id> [--force]` | Delete a job |
 | `pnpm jobbot delete --tier <tier> [--force]` | Bulk delete by tier |
+| `pnpm jobbot delete --status <status> [--force]` | Bulk delete by status |
 | `pnpm jobbot run [--step extract\|score\|compose\|audit]` | Run pipeline (all or single step) |
 | `pnpm jobbot run --job <id>` | Full pipeline for one job |
 | `pnpm jobbot tailor --job <id>` | LLM resume tailoring (internal) |
 | `pnpm jobbot render --job <id>` | LaTeX → PDF rendering (internal) |
 | `pnpm jobbot compose --job <id>` | Tailor + render in one step |
+| `pnpm jobbot cover-letter --job <id>` | Generate cover letter via LLM |
 | `pnpm jobbot audit --job <id>` | Content + visual audit of rendered PDF |
-| `pnpm jobbot ui` | Start web dashboard at http://localhost:3000 |
+| `pnpm jobbot schedule --once` | Run pipeline once |
+| `pnpm jobbot schedule --interval <minutes>` | Run pipeline on a recurring interval |
 | `pnpm test` | Run the test suite |
 | `pnpm typecheck` | Run TypeScript type-checking |
 
@@ -230,12 +254,13 @@ jobbot/
 - [x] **v0.2** — LLM-based scoring using `prompts/score-job.md`
 - [x] **v0.3** — Web UI dashboard + pipeline visualization
 - [x] **v0.4** — Pipeline automation, delete, compose (tailor+render), audit, AI logging
+- [x] **v0.5** — Job discovery, batch URL add, market intelligence, dashboard analytics, resume variants, cover letter tones, scheduled runs
 - [ ] **v1.0** — Playwright + Stagehand browser automation (dry-run default)
 - [ ] **v1.5** — Gmail sync and email classification
 - [ ] **v2.0** — Analytics dashboard and search reports
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro, configurable model) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
 
 Designed for use with **Claude Code** and other AI coding agents on **WSL2**.

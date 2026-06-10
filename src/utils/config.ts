@@ -16,6 +16,7 @@ interface Config {
     deepseek: string;
     anthropic: string;
   };
+  deepseek_model: string;
 }
 
 let cachedConfig: Config | null = null;
@@ -28,6 +29,7 @@ function loadConfig(): Config {
       deepseek: '',
       anthropic: '',
     },
+    deepseek_model: 'deepseek-v4-pro',
   };
 
   if (!existsSync(CONFIG_PATH)) {
@@ -43,6 +45,7 @@ function loadConfig(): Config {
         deepseek: parsed?.api_keys?.deepseek || '',
         anthropic: parsed?.api_keys?.anthropic || '',
       },
+      deepseek_model: parsed?.deepseek_model || 'deepseek-v4-pro',
     };
   } catch {
     cachedConfig = defaults;
@@ -67,6 +70,16 @@ export function getDeepseekKey(): string {
 export function getAnthropicKey(): string {
   const config = loadConfig();
   return config.api_keys.anthropic || process.env['ANTHROPIC_API_KEY'] || process.env['ANTHROPIC_AUTH_TOKEN'] || '';
+}
+
+/**
+ * Get the DeepSeek model name.
+ * Defaults to 'deepseek-v4-pro'. Set `deepseek_model` in local/config.yaml
+ * to use a different model (e.g., 'deepseek-v4-flash' for faster/cheaper).
+ */
+export function getDeepseekModel(): string {
+  const config = loadConfig();
+  return config.deepseek_model || 'deepseek-v4-pro';
 }
 
 /** Reload config (useful after editing via web UI). */

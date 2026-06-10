@@ -1,0 +1,277 @@
+<%- include('_head', { title: 'Add URLs' }) %>
+
+<h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">Add Jobs</h1>
+<p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Paste job posting URLs — one per line — to add them to your pipeline.</p>
+
+<!-- URL input -->
+<div class="card" style="margin-bottom:20px">
+  <h2>URLs</h2>
+  <textarea id="url-input" rows="10" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:13px;resize:vertical" placeholder="https://boards.greenhouse.io/example/jobs/12345&#10;https://jobs.lever.co/example/abc123&#10;https://jobs.ashbyhq.com/example/def456"></textarea>
+  <p id="url-count" style="margin-top:8px;font-size:12px;color:var(--text-dim)">0 URLs entered</p>
+
+  <div style="display:flex;gap:12px;margin-top:16px">
+    <button id="btn-add" class="btn-primary" onclick="addUrls(false)">Add All</button>
+    <button id="btn-add-run" class="btn-accent" onclick="addUrls(true)">Add &amp; Run Pipeline</button>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="results" style="display:none">
+  <div class="card" style="margin-bottom:20px">
+    <h2>Results</h2>
+    <div id="results-summary" style="margin-bottom:12px;font-size:14px"></div>
+    <div style="max-height:400px;overflow-y:auto">
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>ID</th>
+            <th>ATS</th>
+            <th>URL</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Discover Section -->
+<div class="card">
+  <h2>Discover Jobs</h2>
+  <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Search job boards for new postings.</p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Query
+      <input id="discover-query" type="text" placeholder="e.g. backend engineer" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:200px">
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Location
+      <input id="discover-location" type="text" placeholder="e.g. Seattle (optional)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:160px">
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Source
+      <select id="discover-source" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px">
+        <option value="">All sources</option>
+        <option value="greenhouse">Greenhouse</option>
+        <option value="lever">Lever</option>
+        <option value="ashby">Ashby</option>
+        <option value="linkedin">LinkedIn</option>
+      </select>
+    </label>
+    <button id="btn-discover" class="btn-primary" onclick="discoverJobs()">Search</button>
+  </div>
+  <div id="discover-results" style="display:none;margin-top:16px"></div>
+</div>
+
+<style>
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .btn-primary:hover { filter: brightness(1.1); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-accent {
+    background: var(--green);
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .btn-accent:hover { filter: brightness(1.1); }
+  .btn-accent:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-small {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .btn-small:hover { filter: brightness(1.1); }
+  .result-new { color: var(--green); }
+  .result-duplicate { color: var(--yellow); }
+  .result-error { color: var(--red); }
+</style>
+
+<script>
+  const urlInput = document.getElementById('url-input');
+  const urlCount = document.getElementById('url-count');
+
+  urlInput.addEventListener('input', () => {
+    const lines = urlInput.value.split('\n').filter(l => l.trim());
+    urlCount.textContent = `${lines.length} URL(s) entered`;
+  });
+
+  async function addUrls(andRun) {
+    const lines = urlInput.value.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      alert('Enter at least one URL.');
+      return;
+    }
+
+    const btnAdd = document.getElementById('btn-add');
+    const btnAddRun = document.getElementById('btn-add-run');
+    btnAdd.disabled = true;
+    btnAddRun.disabled = true;
+
+    const endpoint = andRun ? '/api/jobs/add-urls-and-run' : '/api/jobs/add-urls';
+
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: lines }),
+      });
+      const data = await resp.json();
+
+      showResults(data);
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      btnAdd.disabled = false;
+      btnAddRun.disabled = false;
+    }
+  }
+
+  function showResults(data) {
+    const div = document.getElementById('results');
+    const summary = document.getElementById('results-summary');
+    const tbody = document.getElementById('results-body');
+
+    div.style.display = 'block';
+    summary.innerHTML = [
+      `<span class="result-new">✓ ${data.added} added</span>`,
+      data.duplicates > 0 ? `<span class="result-duplicate"> · ⚠ ${data.duplicates} duplicate(s)</span>` : '',
+      data.errors > 0 ? `<span class="result-error"> · ✕ ${data.errors} error(s)</span>` : '',
+      data.message ? `<br><span style="color:var(--text-muted)">${data.message}</span>` : '',
+    ].join('');
+
+    tbody.innerHTML = data.results.map(r => {
+      let status, statusClass;
+      if (!r.added) {
+        status = '✕ Error';
+        statusClass = 'result-error';
+      } else if (r.alreadyExisted) {
+        status = '⚠ Duplicate';
+        statusClass = 'result-duplicate';
+      } else {
+        status = '✓ Added';
+        statusClass = 'result-new';
+      }
+
+      const id = r.id ? `#${r.id}` : '-';
+      const ats = r.atsType || '-';
+      const url = r.url || '-';
+      const error = r.error ? `<br><span style="color:var(--red);font-size:11px">${r.error}</span>` : '';
+
+      return `<tr>
+        <td><span class="${statusClass}">${status}</span>${error}</td>
+        <td style="font-variant-numeric:tabular-nums">${id}</td>
+        <td>${ats}</td>
+        <td style="max-width:400px;word-break:break-all;font-size:12px"><a href="${url}" target="_blank" style="color:var(--accent)">${url}</a></td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function discoverJobs() {
+    const query = document.getElementById('discover-query').value.trim();
+    if (!query) { alert('Enter a search query.'); return; }
+
+    const location = document.getElementById('discover-location').value.trim();
+    const source = document.getElementById('discover-source').value;
+
+    const btn = document.getElementById('btn-discover');
+    btn.disabled = true;
+    btn.textContent = 'Searching...';
+
+    try {
+      const params = new URLSearchParams({ query });
+      if (location) params.set('location', location);
+      if (source) params.set('source', source);
+
+      const resp = await fetch(`/api/discover?${params}`);
+      const data = await resp.json();
+
+      const div = document.getElementById('discover-results');
+      div.style.display = 'block';
+
+      if (!data.ok || data.results.length === 0) {
+        div.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No results found.</p>';
+        return;
+      }
+
+      div.innerHTML = `
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">${data.results.length} result(s) from ${data.sources?.join(', ') || 'all sources'}</p>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:30px">+</th>
+              <th>Title</th>
+              <th>Company</th>
+              <th>Location</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.results.map((r, i) => `
+              <tr>
+                <td><button class="btn-small" onclick="addOne('${r.url.replace(/'/g, "\\'")}', this)" title="Add to pipeline">+</button></td>
+                <td style="max-width:250px"><a href="${r.url}" target="_blank" style="color:var(--accent)">${esc(r.title)}</a></td>
+                <td>${esc(r.company)}</td>
+                <td>${esc(r.location)}</td>
+                <td>${r.source}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    } catch (err) {
+      alert(`Discover failed: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Search';
+    }
+  }
+
+  async function addOne(url, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const resp = await fetch('/api/jobs/add-urls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: [url] }),
+      });
+      const data = await resp.json();
+      if (data.results?.[0]?.added) {
+        btn.textContent = '✓';
+        btn.style.background = 'var(--green)';
+      } else {
+        btn.textContent = '⚠';
+        btn.style.background = 'var(--yellow)';
+      }
+    } catch (err) {
+      btn.textContent = '✕';
+      btn.style.background = 'var(--red)';
+    }
+  }
+
+  function esc(s) {
+    if (!s) return '-';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+</script>
+
+<%- include('_foot') %>

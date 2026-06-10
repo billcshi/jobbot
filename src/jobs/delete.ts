@@ -26,11 +26,10 @@ export function deleteJob(id: number): DeleteResult {
     "INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'delete', ?, datetime('now'))",
   ).run(id, `Job #${id} deleted: "${job.title || 'Untitled'}" at ${job.company || 'Unknown'}`);
 
-  // Cascade: delete related rows
+  // Cascade: delete related rows (must delete FK children before parent)
   db.prepare('DELETE FROM applications WHERE job_id = ?').run(id);
   db.prepare('DELETE FROM resume_versions WHERE job_id = ?').run(id);
-  // Keep events row for audit trail — delete is the final event
-  db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+  db.prepare('DELETE FROM events WHERE job_id = ?').run(id);
   db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
 
   logger.info(`Deleted job #${id}: "${job.title || 'Untitled'}" at ${job.company || 'Unknown'}`);

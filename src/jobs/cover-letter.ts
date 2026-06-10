@@ -2,7 +2,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
 import { PROJECT_ROOT, RESUMES_DIR, CANDIDATE_PATH } from '../utils/paths.js';
-import { getDeepseekKey } from '../utils/config.js';
+import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
 import { readYamlFile } from '../utils/yaml.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
@@ -18,6 +18,8 @@ interface CandidateProfile {
   links: { github?: string; linkedin?: string };
 }
 
+export type CoverLetterTone = 'professional' | 'enthusiastic' | 'concise';
+
 export interface CoverLetterResult {
   success: boolean;
   jobId: number;
@@ -25,6 +27,12 @@ export interface CoverLetterResult {
   body?: string;
   error?: string;
 }
+
+const TONE_INSTRUCTIONS: Record<CoverLetterTone, string> = {
+  professional: 'Write a polished, professional cover letter. Standard business tone. Balance confidence with humility.',
+  enthusiastic: 'Write an enthusiastic, energetic cover letter. Show genuine excitement about the role and company. Use a warm, engaging tone while remaining professional.',
+  concise: 'Write a concise, direct cover letter. Keep paragraphs short. Get straight to the point — no filler. Maximum 3 short paragraphs.',
+};
 
 /** Escape LaTeX special chars. */
 function latexEscape(s: string): string {
@@ -44,7 +52,7 @@ function latexEscape(s: string): string {
 /**
  * Generate a cover letter via DeepSeek LLM and render to PDF.
  */
-export async function generateCoverLetter(jobId: number): Promise<CoverLetterResult> {
+export async function generateCoverLetter(jobId: number, tone: CoverLetterTone = 'professional'): Promise<CoverLetterResult> {
   const db = getDb();
   const job = db.prepare(
     'SELECT id, title, company, location, description FROM jobs WHERE id = ?',
@@ -76,7 +84,12 @@ export async function generateCoverLetter(jobId: number): Promise<CoverLetterRes
   logger.info(`Generating cover letter for job #${jobId}: "${job.title}" at ${job.company}...`);
 
   // ---- LLM generation ----
+  const toneInstruction = TONE_INSTRUCTIONS[tone] || TONE_INSTRUCTIONS.professional;
+
   const userMsg = [
+    `## Tone: ${tone}`,
+    toneInstruction,
+    '',
     `## Job Posting`,
     `Title: ${job.title || 'Unknown'}`,
     `Company: ${job.company || 'Unknown'}`,
@@ -102,7 +115,7 @@ export async function generateCoverLetter(jobId: number): Promise<CoverLetterRes
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: getDeepseekModel(),
         messages: [
           { role: 'system', content: COVER_LETTER_PROMPT },
           { role: 'user', content: userMsg },
@@ -125,7 +138,7 @@ export async function generateCoverLetter(jobId: number): Promise<CoverLetterRes
 
     logAiCall({
       operation: 'cover-letter',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Cover letter for job #${jobId} "${job.title}" at ${job.company}`,
@@ -136,7 +149,7 @@ export async function generateCoverLetter(jobId: number): Promise<CoverLetterRes
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logAiCall({ operation: 'cover-letter', model: 'deepseek-chat', provider: 'deepseek', endpoint: 'https://api.deepseek.com/v1/chat/completions', requestSummary: `Cover letter for job #${jobId}`, responseSummary: msg, durationMs: Date.now() - startMs, success: false, error: msg });
+    logAiCall({ operation: 'cover-letter', model: getDeepseekModel(), provider: 'deepseek', endpoint: 'https://api.deepseek.com/v1/chat/completions', requestSummary: `Cover letter for job #${jobId}`, responseSummary: msg, durationMs: Date.now() - startMs, success: false, error: msg });
     return { success: false, jobId, error: msg };
   }
 

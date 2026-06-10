@@ -14,3 +14,9 @@ api_keys:
                      # Used for: audit-visual (Claude Vision reviews rendered PDF)
                      # Optional — visual audit skips gracefully if not set
                      # Env fallback: ANTHROPIC_API_KEY
+
+# DeepSeek model to use for all LLM calls.
+# Default: deepseek-v4-pro (best quality)
+# Options: deepseek-v4-pro, deepseek-v4-flash
+# Note: deepseek-chat and deepseek-reasoner will be deprecated 2026/07/24
+deepseek_model: deepseek-v4-pro

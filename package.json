@@ -2,7 +2,7 @@
   "name": "jobbot",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal job-search assistant — high quality, not high volume. LaTeX resumes.",
+  "description": "Web-UI personal job-search assistant — high quality, not high volume. Dashboard, pipeline, LaTeX resumes, AI scoring.",
   "type": "module",
   "scripts": {
     "jobbot": "tsx src/cli.ts",

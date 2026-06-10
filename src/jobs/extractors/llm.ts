@@ -1,11 +1,17 @@
 import * as cheerio from 'cheerio';
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR } from '../../utils/paths.js';
-import { getDeepseekKey } from '../../utils/config.js';
+import { getDeepseekKey, getDeepseekModel } from '../../utils/config.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
 
 const EXTRACT_PROMPT = readFileSync(`${PROMPTS_DIR}/extract-job.md`, 'utf-8');
+
+export interface LlmSalary {
+  low: number | null;
+  high: number | null;
+  currency: string;
+}
 
 export interface LlmExtractedJob {
   title: string;
@@ -13,6 +19,8 @@ export interface LlmExtractedJob {
   location: string;
   description: string;
   applyUrl: string;
+  salary: LlmSalary | null;
+  skills: string[];
 }
 
 /**
@@ -51,7 +59,7 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
   logger.debug(`LLM extraction: ${truncated.length} chars from ${url}`);
 
   const requestBody = {
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     messages: [
       { role: 'system', content: EXTRACT_PROMPT },
       { role: 'user', content: `URL: ${url}\n\nPage text:\n${truncated}` },
@@ -91,7 +99,7 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
 
         logAiCall({
           operation: 'extract',
-          model: 'deepseek-chat',
+          model: getDeepseekModel(),
           provider: 'deepseek',
           endpoint: 'https://api.deepseek.com/v1/chat/completions',
           requestSummary: `Extract job details from ${url} (${truncated.length} chars)`,
@@ -108,6 +116,14 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
           location: parsed.location || '',
           description: parsed.description || '',
           applyUrl: parsed.apply_url || url,
+          salary: parsed.salary && typeof parsed.salary === 'object' && (parsed.salary.low != null || parsed.salary.high != null)
+            ? {
+                low: typeof parsed.salary.low === 'number' ? parsed.salary.low : null,
+                high: typeof parsed.salary.high === 'number' ? parsed.salary.high : null,
+                currency: parsed.salary.currency || 'USD',
+              }
+            : null,
+          skills: Array.isArray(parsed.skills) ? parsed.skills.filter((s: unknown): s is string => typeof s === 'string') : [],
         };
       }
     }
@@ -118,7 +134,7 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
   // If we reach here, something failed
   logAiCall({
     operation: 'extract',
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     provider: 'deepseek',
     endpoint: 'https://api.deepseek.com/v1/chat/completions',
     requestSummary: `Extract job details from ${url} (${truncated.length} chars)`,

@@ -3,6 +3,7 @@ import { composeJob } from './compose.js';
 import { auditJob } from './audit.js';
 import { getDb } from '../db/client.js';
 import { logger } from '../utils/logger.js';
+import { extractMarketData } from './market-data.js';
 
 /** Delay helper — small pause between LLM calls to avoid rate limits. */
 function delay(ms: number): Promise<void> {
@@ -89,6 +90,9 @@ export async function runScore(): Promise<void> {
       ).run(result.score, result.tier, result.reason, jobId);
       console.log(`  ✓ ${result.tier} (${result.score.toFixed(2)})`);
       scored++;
+
+      // Extract market data from scored jobs
+      extractMarketData(job);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`Score job ${jobId}: ${msg}`);
@@ -297,6 +301,9 @@ export async function runJob(jobId: number): Promise<void> {
       "UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?",
     ).run(result.score, result.tier, result.reason, jobId);
     console.log(`${result.tier} (${result.score.toFixed(2)}) — ${result.reason.slice(0, 120)}`);
+
+    // Extract market data
+    extractMarketData(job);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Score failed: ${msg}`);

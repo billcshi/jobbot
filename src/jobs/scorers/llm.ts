@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR } from '../../utils/paths.js';
 import { CANDIDATE_PATH, PREFERENCES_PATH } from '../../utils/paths.js';
-import { getDeepseekKey } from '../../utils/config.js';
+import { getDeepseekKey, getDeepseekModel } from '../../utils/config.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
 import type { ScoreResult } from '../score.js';
@@ -59,7 +59,7 @@ export async function scoreJobWithLLM(
   logger.debug(`Scoring job ${job.id} via LLM...`);
 
   const requestBody = {
-    model: 'deepseek-chat',
+    model: getDeepseekModel(),
     messages: [
       { role: 'system', content: SCORE_PROMPT },
       { role: 'user', content: [
@@ -92,7 +92,7 @@ export async function scoreJobWithLLM(
       const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
       logAiCall({
         operation: 'score',
-        model: 'deepseek-chat',
+        model: getDeepseekModel(),
         provider: 'deepseek',
         endpoint: 'https://api.deepseek.com/v1/chat/completions',
         requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
@@ -121,7 +121,7 @@ export async function scoreJobWithLLM(
 
     logAiCall({
       operation: 'score',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
@@ -136,7 +136,7 @@ export async function scoreJobWithLLM(
     const msg = err instanceof Error ? err.message : String(err);
     logAiCall({
       operation: 'score',
-      model: 'deepseek-chat',
+      model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,

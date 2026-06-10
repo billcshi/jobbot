@@ -40,11 +40,22 @@
     <span id="ai-status" style="font-size:13px"></span>
   </div>
   <div id="ai-preview" style="display:none">
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:8px">AI-generated changes (review before saving):</p>
-    <pre id="ai-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:16px;font-family:'SF Mono',monospace;font-size:13px;line-height:1.5;max-height:400px;overflow:auto;white-space:pre-wrap"></pre>
-    <div style="margin-top:8px;display:flex;gap:8px">
-      <button class="btn-save" onclick="applyAiChanges()">✅ Apply Changes</button>
-      <button class="btn-cancel" onclick="discardAiChanges()">Discard</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <p style="font-size:13px;color:var(--text-muted);margin:0">Review changes — <span id="diff-summary"></span></p>
+      <div style="display:flex;gap:8px">
+        <button class="btn-save" onclick="applyAiChanges()">✅ Apply Changes</button>
+        <button class="btn-cancel" onclick="discardAiChanges()">Discard</button>
+      </div>
+    </div>
+    <div class="diff-container">
+      <div class="diff-panel diff-panel-left">
+        <div class="diff-panel-header">Before (current)</div>
+        <div id="diff-old" class="diff-content"></div>
+      </div>
+      <div class="diff-panel diff-panel-right">
+        <div class="diff-panel-header">After (AI proposed)</div>
+        <div id="diff-new" class="diff-content"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -98,10 +109,80 @@
   font-size: 13px;
 }
 .btn-cancel:hover { background: var(--bg-hover); }
+
+/* diff view */
+.diff-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  max-height: 500px;
+}
+.diff-panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.diff-panel-header {
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.diff-panel-right .diff-panel-header {
+  color: var(--green);
+}
+.diff-content {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.diff-line {
+  padding: 1px 12px;
+  white-space: pre;
+  border-bottom: 1px solid rgba(48,54,61,0.3);
+  min-height: 20px;
+}
+.diff-line-num {
+  display: inline-block;
+  width: 32px;
+  text-align: right;
+  margin-right: 12px;
+  color: var(--text-dim);
+  font-size: 10px;
+  user-select: none;
+  flex-shrink: 0;
+}
+.diff-line.added {
+  background: rgba(63,185,80,0.12);
+  color: var(--green);
+}
+.diff-line.removed {
+  background: rgba(248,81,73,0.12);
+  color: var(--red);
+}
+.diff-line.unchanged {
+  color: var(--text-dim);
+}
+.diff-line.empty {
+  color: transparent;
+  border-bottom: 1px solid rgba(48,54,61,0.15);
+}
 </style>
 
 <script>
   const profileFile = '<%= profileFile %>';
+  // Store original YAML for diff comparison
+  const originalYaml = '<%- yamlRaw.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '') %>';
 
   function switchMode(mode) {
     document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
@@ -135,6 +216,78 @@
     }
   }
 
+  // ---- simple LCS-based line diff ----
+
+  function computeDiff(oldLines, newLines) {
+    // LCS table
+    const m = oldLines.length, n = newLines.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (oldLines[i - 1] === newLines[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+    }
+
+    // Backtrack to build aligned rows
+    const rows = [];
+    let i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+        rows.unshift({ type: 'unchanged', oldLine: oldLines[i - 1], newLine: newLines[j - 1] });
+        i--; j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        rows.unshift({ type: 'added', oldLine: '', newLine: newLines[j - 1] });
+        j--;
+      } else {
+        rows.unshift({ type: 'removed', oldLine: oldLines[i - 1], newLine: '' });
+        i--;
+      }
+    }
+    return rows;
+  }
+
+  function renderDiff(oldText, newText) {
+    const oldLines = oldText.split('\n');
+    const newLines = newText.split('\n');
+    const diff = computeDiff(oldLines, newLines);
+
+    const addedCount = diff.filter(r => r.type === 'added').length;
+    const removedCount = diff.filter(r => r.type === 'removed').length;
+    const changedCount = addedCount + removedCount;
+
+    // Summary
+    const summaryEl = document.getElementById('diff-summary');
+    if (changedCount === 0) {
+      summaryEl.innerHTML = '<span style="color:var(--text-dim)">No changes detected</span>';
+    } else {
+      const parts = [];
+      if (addedCount > 0) parts.push(`<span style="color:var(--green)">+${addedCount} added</span>`);
+      if (removedCount > 0) parts.push(`<span style="color:var(--red)">−${removedCount} removed</span>`);
+      summaryEl.innerHTML = parts.join(' · ');
+    }
+
+    // Render side-by-side
+    let oldHtml = '', newHtml = '';
+    for (let idx = 0; idx < diff.length; idx++) {
+      const r = diff[idx];
+      const clsOld = r.type === 'removed' ? 'removed' : r.type === 'added' ? 'empty' : 'unchanged';
+      const clsNew = r.type === 'added' ? 'added' : r.type === 'removed' ? 'empty' : 'unchanged';
+      oldHtml += `<div class="diff-line ${clsOld}">${escHtml(r.oldLine) || ' '}</div>`;
+      newHtml += `<div class="diff-line ${clsNew}">${escHtml(r.newLine) || ' '}</div>`;
+    }
+
+    document.getElementById('diff-old').innerHTML = oldHtml;
+    document.getElementById('diff-new').innerHTML = newHtml;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   let aiResult = null;
 
   async function aiEdit() {
@@ -156,9 +309,9 @@
       const data = await resp.json();
       if (data.ok) {
         aiResult = data.yaml;
-        document.getElementById('ai-output').textContent = data.yaml;
+        renderDiff(originalYaml, data.yaml);
         document.getElementById('ai-preview').style.display = 'block';
-        status.textContent = '✓ Review the changes below';
+        status.textContent = '✓ Review the changes — old on left, new on right';
         status.style.color = 'var(--green)';
       } else {
         status.textContent = '✕ ' + (data.error || 'AI edit failed');

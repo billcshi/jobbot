@@ -16,6 +16,71 @@
   <% } %>
 </div>
 
+<!-- analytics charts -->
+<% if (totalJobs > 0) { %>
+<div class="grid-2" style="margin-bottom:20px">
+  <!-- Tier Distribution -->
+  <div class="card">
+    <h2>Tier Distribution</h2>
+    <div style="padding:8px 0">
+      <% const tiers = ['A','B','C','D']; const maxTier = Math.max(counts.A, counts.B, counts.C, counts.D, 1); %>
+      <% for (const t of tiers) { %>
+        <% const tc = counts[t]; const tw = Math.max((tc / maxTier) * 100, 2); %>
+        <% const tcolors = { A: 'var(--green)', B: 'var(--accent)', C: 'var(--yellow)', D: 'var(--red)' }; %>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="width:20px;font-size:12px;font-weight:700;text-align:right;color:<%= tcolors[t] %>"><%= t %></span>
+          <div style="flex:1;background:var(--bg);border-radius:4px;height:20px;overflow:hidden">
+            <div style="width:<%= tw %>%;height:100%;background:<%= tcolors[t] %>;border-radius:4px;transition:width 0.3s"></div>
+          </div>
+          <span style="width:36px;font-size:12px;color:var(--text-dim);text-align:right"><%= tc %></span>
+          <span style="width:48px;font-size:11px;color:var(--text-dim)"><%= ((tc / totalJobs) * 100).toFixed(0) %>%</span>
+        </div>
+      <% } %>
+    </div>
+  </div>
+
+  <!-- Pipeline Funnel -->
+  <div class="card">
+    <h2>Pipeline Funnel</h2>
+    <svg width="100%" height="192" viewBox="0 0 300 192" style="display:block;margin:0 auto">
+      <% const stages = [
+        { label: 'Ingested', count: stageCounts.ingested, color: '#8b949e' },
+        { label: 'Extracted', count: stageCounts.extracted, color: '#58a6ff' },
+        { label: 'Scored', count: stageCounts.scored, color: '#a371f7' },
+        { label: 'Composed', count: stageCounts.composed, color: '#d2991d' },
+        { label: 'Audited', count: stageCounts.audited, color: '#3fb950' },
+      ];
+      const maxCount = Math.max(totalJobs, 1);
+      const barH = 26;
+      const gap = 10;
+      %>
+      <% for (let i = 0; i < stages.length; i++) { %>
+        <% const s = stages[i]; %>
+        <% const sw = Math.max((s.count / maxCount) * 220, 30); %>
+        <% const sx = 80 + (220 - sw) / 2; %>
+        <% const sy = 10 + i * (barH + gap); %>
+        <text x="72" y="<%= sy + 17 %>" text-anchor="end" fill="#8b949e" font-size="11" font-family="sans-serif"><%= s.label %></text>
+        <rect x="<%= sx %>" y="<%= sy %>" width="<%= sw %>" height="<%= barH %>" rx="4" fill="<%= s.color %>" opacity="0.85"/>
+        <text x="<%= sx + sw/2 %>" y="<%= sy + 17 %>" text-anchor="middle" fill="#fff" font-size="11" font-weight="600" font-family="sans-serif"><%= s.count %></text>
+      <% } %>
+    </svg>
+  </div>
+</div>
+
+<!-- Top Companies -->
+<% if (topCompanies.length > 0) { %>
+<div class="card" style="margin-bottom:20px">
+  <h2>Top Companies</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:6px">
+    <% for (const c of topCompanies) { %>
+      <span class="stat" style="font-size:12px"><%= c.company %> <strong style="font-size:13px"><%= c.count %></strong></span>
+    <% } %>
+  </div>
+</div>
+<% } %>
+
+<% } %>
+
 <!-- filter bar -->
 <div class="filter-bar">
   <label>Tier:

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * JobBot CLI — v0.4
+ * JobBot CLI — v0.5
  *
  * Commands:
  *   init-db                     Create/update the SQLite database
@@ -16,7 +16,10 @@ import { extractJob, extractAll } from './jobs/extract.js';
 import { scoreAll } from './jobs/score.js';
 import { listJobs } from './jobs/list.js';
 import { deleteJob, deleteByTier, deleteByStatus } from './jobs/delete.js';
+import { discoverJobs } from './jobs/discover.js';
+import { printMarketData } from './jobs/market-data.js';
 import { startUi } from './ui/server.js';
+import { runOnce, startSchedule } from './jobs/schedule.js';
 import { logger } from './utils/logger.js';
 
 function usage(): never {
@@ -24,7 +27,8 @@ function usage(): never {
 
 Usage:
   pnpm jobbot init-db
-  pnpm jobbot add-url <url>
+  pnpm jobbot add-url <url> [url2 ...]
+  pnpm jobbot discover --query <terms> [--location <city>] [--source <board>] [--ingest] [--company <name>]
   pnpm jobbot extract [--job <id>]
   pnpm jobbot score
   pnpm jobbot list [--tier <tier>]
@@ -89,17 +93,25 @@ async function main(): Promise<void> {
     }
 
     case 'add-url': {
-      const url = positional[0];
-      if (!url) {
-        logger.error('Missing required argument: <url>');
+      const urls = positional.length > 0 ? positional : [];
+      if (urls.length === 0) {
+        logger.error('Missing required argument: <url> [url2 ...]');
         process.exit(1);
       }
-      const result = addUrl(url);
-      if (result.alreadyExisted) {
-        console.log(`Already tracked (id=${result.id}, ats=${result.atsType})`);
-      } else {
-        console.log(`Added (id=${result.id}, ats=${result.atsType})`);
+
+      let added = 0;
+      let duplicates = 0;
+      for (const url of urls) {
+        const result = addUrl(url);
+        if (result.alreadyExisted) {
+          console.log(`  ⚠ Duplicate (id=${result.id}, ats=${result.atsType}): ${url}`);
+          duplicates++;
+        } else {
+          console.log(`  ✓ Added (id=${result.id}, ats=${result.atsType}): ${url}`);
+          added++;
+        }
       }
+      console.log(`\n${added} added, ${duplicates} duplicate(s).`);
       break;
     }
 
@@ -290,6 +302,91 @@ async function main(): Promise<void> {
       } else {
         logger.error(`Compose failed: ${result.error}`);
       }
+      break;
+    }
+
+    case 'discover': {
+      const query = flags['query'];
+      const location = flags['location'];
+      const source = flags['source'];
+      const ingest = flags['ingest'] === 'true';
+      const company = flags['company'];
+
+      if (!query) {
+        logger.error('discover requires --query <search terms>');
+        process.exit(1);
+      }
+
+      const sources = source ? source.split(',').map((s: string) => s.trim()) as Array<'greenhouse' | 'lever' | 'ashby' | 'linkedin'> : undefined;
+
+      console.log(`Searching for "${query}"...\n`);
+      const results = await discoverJobs({ query, location, sources, company });
+
+      if (results.length === 0) {
+        console.log('No results found.');
+      } else {
+        // Print table
+        const wTitle = 35, wCompany = 20, wLocation = 20, wSource = 12;
+        const titlePad = (s: string, w: number) => s.length > w ? s.slice(0, w - 1) + '…' : s.padEnd(w);
+        console.log(
+          `${'TITLE'.padEnd(wTitle)} │ ${'COMPANY'.padEnd(wCompany)} │ ${'LOCATION'.padEnd(wLocation)} │ ${'SOURCE'.padEnd(wSource)} │ URL`,
+        );
+        console.log('─'.repeat(wTitle + wCompany + wLocation + wSource + 60));
+        for (const r of results) {
+          console.log(
+            `${titlePad(r.title, wTitle)} │ ${titlePad(r.company, wCompany)} │ ${titlePad(r.location, wLocation)} │ ${r.source.padEnd(wSource)} │ ${r.url}`,
+          );
+        }
+        console.log(`\n${results.length} result(s).`);
+
+        if (ingest) {
+          console.log('\nAdding to pipeline...');
+          let added = 0;
+          let skipped = 0;
+          for (const r of results) {
+            const result = addUrl(r.url);
+            if (result.alreadyExisted) {
+              skipped++;
+            } else {
+              added++;
+              console.log(`  ✓ #${result.id}: "${r.title}" at ${r.company}`);
+            }
+          }
+          console.log(`\n${added} added, ${skipped} already tracked.`);
+        }
+      }
+      break;
+    }
+
+    case 'schedule': {
+      const interval = flags['interval'];
+      const once = flags['once'] === 'true';
+
+      if (once) {
+        console.log('Running pipeline once...');
+        await runOnce();
+        console.log('Done.');
+      } else if (interval) {
+        const minutes = parseInt(interval, 10);
+        if (isNaN(minutes) || minutes < 1) {
+          logger.error('Interval must be a positive number of minutes.');
+          process.exit(1);
+        }
+        console.log(`Starting pipeline schedule: every ${minutes} minute(s).`);
+        console.log('Press Ctrl+C to stop.');
+        startSchedule(minutes);
+        // Keep process alive
+        await new Promise(() => { /* wait forever */ });
+      } else {
+        logger.error('schedule requires --interval <minutes> or --once');
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'market-data': {
+      const key = flags['key'];
+      printMarketData(key);
       break;
     }
 
