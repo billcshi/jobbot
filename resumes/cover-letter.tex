@@ -4,7 +4,6 @@
 % Placeholders injected by the CLI during cover-letter generation.
 
 \documentclass[letterpaper,10pt]{article}
-\usepackage{fontawesome5}
 \usepackage[empty]{fullpage}
 \usepackage{titlesec}
 \usepackage[usenames,dvipsnames]{color}
@@ -30,8 +29,6 @@
 \urlstyle{same}
 \raggedbottom
 \raggedright
-\definecolor{Black}{RGB}{0, 0, 0}
-\newcommand{\seticon}[1]{\textcolor{Black}{\csname #1\endcsname}}
 \pdfgentounicode=1
 
 \begin{document}
@@ -40,11 +37,11 @@
 \begin{center}
   {\Large \scshape {{name}}}\\\vspace{2pt}
   \footnotesize
-  {{#phone}}\seticon{faPhone}\ {{phone}} \quad
-  {{#email}}\href{mailto:{{email}}}{\seticon{faEnvelope}\ \underline{{{email}}}} \quad
-  {{#linkedin}}\href{https://linkedin.com/in/{{linkedin}}}{\seticon{faLinkedin}\ \underline{linkedin.com/in/{{linkedin}}}} \quad
-  {{#github}}\href{https://github.com/{{github}}}{\seticon{faGithub}\ \underline{github.com/{{github}}}}
-  {{/github}}{{/linkedin}}{{/email}}{{/phone}}
+  {{#phone}}{{phone}} $|$ {{/phone}}
+  {{#email}}\href{mailto:{{email}}}{{{email}}} $|$ {{/email}}
+  {{#linkedin}}\href{https://linkedin.com/in/{{linkedin}}}{linkedin.com/in/{{linkedin}}} $|$ {{/linkedin}}
+  {{#github}}\href{https://github.com/{{github}}}{github.com/{{github}}}
+  {{/github}}
 \end{center}
 
 \vspace{4pt}

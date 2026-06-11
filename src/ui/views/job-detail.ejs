@@ -17,32 +17,80 @@
 
 <!-- pipeline tracker -->
 <div class="card" style="margin-bottom:20px">
-  <h2>Pipeline Progress</h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+    <h2 style="margin:0">Pipeline Progress</h2>
+    <% const needsPipeline = job.status !== 'audited' && job.status !== 'applied'; %>
+    <button class="btn-run-pipeline" id="btn-run-pipeline"
+            onclick="runFullPipeline()"
+            <%= needsPipeline ? '' : 'disabled style="opacity:0.4;cursor:default"' %>
+            title="<%= needsPipeline ? 'Run the full pipeline for this job' : 'Pipeline complete' %>">
+      <%= job.status === 'new' ? '▶ Run Pipeline' : (needsPipeline ? '▶ Resume Pipeline' : '✓ Pipeline Complete') %>
+    </button>
+  </div>
   <%
+    const statusOrder = ['new', 'extracted', 'scored', 'composed', 'audited', 'applied'];
+    const currentStatusIdx = statusOrder.indexOf(job.status);
     const stages = [
-      { key: 'new', label: 'Ingest' },
-      { key: 'extracted', label: 'Extract' },
-      { key: 'scored', label: 'Score' },
-      { key: 'composed', label: 'Compose' },
-      { key: 'audited', label: 'Audit' },
-      { key: 'applied', label: 'Apply' },
+      { key: 'new', label: 'Ingest', clickable: false },
+      { key: 'extracted', label: 'Extract', clickable: true, step: 'extract', dbBefore: 'new' },
+      { key: 'scored', label: 'Score', clickable: true, step: 'score', dbBefore: 'extracted' },
+      { key: 'composed', label: 'Compose', clickable: true, step: 'compose', dbBefore: 'scored' },
+      { key: 'audited', label: 'Audit', clickable: true, step: 'audit', dbBefore: 'composed' },
+      { key: 'applied', label: 'Apply', clickable: false },
     ];
     const currentIdx = stages.findIndex(s => s.key === job.status);
   %>
-  <div class="pipeline-steps" style="flex-wrap:wrap;gap:4px">
-    <% for (let i = 0; i < stages.length; i++) { %>
+  <div class="pipeline-steps" style="flex-wrap:wrap;gap:4px;align-items:flex-start">
+    <% for (let i = 0; i < stages.length; i++) {
+      const st = stages[i];
+      // Determine clickability: clickable only if it has a step and is past or current
+      let canClick = false;
+      let actionType = ''; // 'restart' | 'rerun'
+      if (st.clickable && st.step && st.dbBefore) {
+        const dbBeforeIdx = statusOrder.indexOf(st.dbBefore);
+        if (currentStatusIdx > dbBeforeIdx) {
+          canClick = true;
+          actionType = 'restart'; // past stage — restart from here
+        } else if (currentStatusIdx === dbBeforeIdx) {
+          canClick = true;
+          actionType = 'rerun'; // current stage — re-run
+        }
+      }
+      const stepClass = i < currentIdx ? 'done' : (i === currentIdx ? 'current' : '');
+      const clickClass = canClick ? 'clickable-stage' : '';
+    %>
       <% if (i > 0) { %>
-        <div class="pipeline-connector <%= i <= currentIdx ? 'done' : '' %>" style="margin:0 2px"></div>
+        <div class="pipeline-connector <%= i <= currentIdx ? 'done' : '' %>" style="margin:0 2px;align-self:center"></div>
       <% } %>
-      <div class="pipeline-step <%= i < currentIdx ? 'done' : (i === currentIdx ? 'current' : '') %>">
-        <div class="dot"></div>
-        <span><%= stages[i].label %></span>
-      </div>
+      <% if (canClick) { %>
+        <button class="pipeline-step <%= stepClass %> <%= clickClass %>"
+                onclick="showStagePopover(event, '<%= st.step %>', '<%= st.label %>', '<%= actionType %>')"
+                title="<%= actionType === 'restart' ? 'Restart pipeline from ' + st.label : 'Re-run ' + st.label %>">
+          <div class="dot"></div>
+          <span><%= st.label %></span>
+        </button>
+      <% } else { %>
+        <div class="pipeline-step <%= stepClass %>" style="cursor:default">
+          <div class="dot"></div>
+          <span><%= st.label %></span>
+        </div>
+      <% } %>
     <% } %>
+  </div>
+  <!-- Popover (hidden by default, shown on stage click) -->
+  <div id="stage-popover" class="stage-popover" style="display:none">
+    <div class="popover-content">
+      <span id="popover-msg"></span>
+      <div class="popover-actions">
+        <button id="popover-action-btn" class="btn-popover-action"></button>
+        <button class="btn-popover-cancel" onclick="hidePopover()">Cancel</button>
+      </div>
+    </div>
   </div>
   <p style="margin-top:12px;font-size:12px;color:var(--text-dim)">
     Status: <strong style="color:var(--text)"><%= helpers.statusLabel(job.status) %></strong>
     &nbsp;·&nbsp; Added <%= job.discovered_at %>
+    &nbsp;·&nbsp; <span id="run-from-status" style="color:var(--accent)"></span>
   </p>
 </div>
 
@@ -51,15 +99,17 @@
 
   <!-- score card -->
   <div class="card">
-    <h2>Score</h2>
-    <% if (job.score != null) { %>
+    <h2>Score <span style="font-size:11px;color:var(--text-dim);font-weight:400">(<%= typeof activeUser !== 'undefined' ? activeUser : 'default' %>)</span></h2>
+    <% const dScore = (typeof displayScore !== 'undefined' && displayScore != null) ? displayScore : job.score;
+       const dTier = (typeof displayTier !== 'undefined' && displayTier) ? displayTier : job.tier; %>
+    <% if (dScore != null) { %>
       <div class="score-display">
         <div class="score-number" style="color:<%=
-          job.tier === 'A' ? 'var(--green)' :
-          job.tier === 'B' ? 'var(--accent)' :
-          job.tier === 'C' ? 'var(--yellow)' : 'var(--red)'
-        %>"><%= helpers.scoreFmt(job.score) %></div>
-        <span class="badge <%= helpers.tierClass(job.tier) %>" style="font-size:14px;padding:4px 12px"><%= helpers.tierLabel(job.tier) %></span>
+          dTier === 'A' ? 'var(--green)' :
+          dTier === 'B' ? 'var(--accent)' :
+          dTier === 'C' ? 'var(--yellow)' : 'var(--red)'
+        %>"><%= helpers.scoreFmt(dScore) %></div>
+        <span class="badge <%= helpers.tierClass(dTier) %>" style="font-size:14px;padding:4px 12px"><%= helpers.tierLabel(dTier) %></span>
       </div>
       <% if (reasonParagraphs.length > 0) { %>
         <div class="score-reason">
@@ -195,7 +245,7 @@
   <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
     <% if (resumeVersion && resumeVersion.pdf_path) { %>
       <div>
-        <a href="<%= '/resumes/' + resumeVersion.pdf_path.split('/').pop() %>" class="btn-link" download>📥 Download Resume PDF</a>
+        <a href="<%= '/resumes/' + job.id + '/resume.pdf' %>" class="btn-link" download>📥 Download Resume PDF</a>
         <p style="font-size:11px;color:var(--text-dim);margin-top:4px"><%= resumeVersion.pdf_path %></p>
       </div>
     <% } else { %>
@@ -204,7 +254,7 @@
 
     <% if (hasCoverLetter) { %>
       <div>
-        <a href="<%= '/resumes/' + job.id + '-cover-letter.pdf' %>" class="btn-link" download>📥 Download Cover Letter</a>
+        <a href="<%= '/resumes/' + job.id + '/cover-letter.pdf' %>" class="btn-link" download>📥 Download Cover Letter</a>
       </div>
     <% } %>
 
@@ -269,6 +319,51 @@
   </div>
 </div>
 
+<!-- application tracking -->
+<div class="card" style="margin-top:20px">
+  <h2>Application Tracking</h2>
+  <% if (typeof application !== 'undefined' && application && application.status !== 'draft') { %>
+    <div style="font-size:13px;color:var(--text-muted)">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+        <div><strong style="color:var(--text)">Status:</strong>
+          <span class="badge" style="background:rgba(88,166,255,0.15);color:var(--accent);font-size:12px"><%= application.status %></span>
+        </div>
+        <% if (application.submitted_at) { %>
+          <div><strong style="color:var(--text)">Submitted:</strong> <%= application.submitted_at %></div>
+        <% } %>
+        <% if (application.response_type) { %>
+          <div><strong style="color:var(--text)">Response:</strong>
+            <span style="color:<%= application.response_type === 'rejected' ? 'var(--red)' : 'var(--green)' %>"><%= application.response_type %></span>
+            <% if (application.responded_at) { %> <span style="color:var(--text-dim);font-size:11px">(<%= application.responded_at %>)</span><% } %>
+          </div>
+        <% } %>
+        <% if (application.notes) { %>
+          <div><strong style="color:var(--text)">Notes:</strong> <%= application.notes %></div>
+        <% } %>
+      </div>
+    </div>
+    <!-- Response buttons -->
+    <% if (application.status === 'submitted' && !application.response_type) { %>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn-regen" onclick="recordResponse('replied')" style="color:var(--accent)">💬 Replied</button>
+        <button class="btn-regen" onclick="recordResponse('interview')" style="color:var(--green)">🎯 Interview</button>
+        <button class="btn-regen" onclick="recordResponse('offer')" style="color:var(--purple)">🏆 Offer</button>
+        <button class="btn-regen" onclick="recordResponse('rejected')" style="color:var(--red)">❌ Rejected</button>
+      </div>
+    <% } %>
+    <% if (application.response_type === 'offer') { %>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn-regen" onclick="recordResponse('accepted')" style="color:var(--green)">✅ Accepted</button>
+        <button class="btn-regen" onclick="recordResponse('rejected')" style="color:var(--red)">❌ Declined</button>
+      </div>
+    <% } %>
+  <% } else { %>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Not applied yet.</p>
+    <button class="btn-regen" onclick="markApplied()" style="color:var(--green)">📝 Mark as Applied</button>
+  <% } %>
+  <div id="app-status" style="font-size:11px;color:var(--text-dim);margin-top:8px"></div>
+</div>
+
 <!-- event timeline -->
 <% if (events && events.length > 0) { %>
   <div class="card" style="margin-top:24px">
@@ -330,6 +425,59 @@
   transition: all 0.15s;
 }
 .btn-link:hover { background: rgba(88,166,255,0.2); }
+
+/* Run Pipeline button */
+.btn-run-pipeline {
+  background: var(--accent); color: #fff;
+  border: none; padding: 6px 16px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; font-weight: 600;
+  white-space: nowrap; transition: all 0.15s;
+}
+.btn-run-pipeline:hover { filter: brightness(1.1); }
+.btn-run-pipeline:disabled { background: var(--border); color: var(--text-dim); cursor: default; }
+
+/* Clickable pipeline stages */
+button.pipeline-step {
+  display: flex; align-items: center; gap: 4px; padding: 5px 10px;
+  background: none; border: 1px solid transparent; border-radius: 15px;
+  color: var(--text-dim); font-size: 11px; font-family: inherit;
+  transition: all 0.15s;
+}
+button.pipeline-step.clickable-stage {
+  cursor: pointer; border-color: var(--border);
+}
+button.pipeline-step.clickable-stage:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: rgba(88,166,255,0.08);
+}
+button.pipeline-step.done {
+  color: var(--text-muted); border-color: rgba(63,185,80,0.3);
+}
+button.pipeline-step.current {
+  color: var(--accent); border-color: var(--accent); font-weight: 700;
+}
+
+/* Stage popover */
+.stage-popover {
+  position: relative; margin-top: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 12px 16px; z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.popover-content { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--text); }
+.popover-actions { display: flex; gap: 8px; margin-left: auto; }
+.btn-popover-action {
+  background: var(--accent); color: #fff; border: none;
+  padding: 5px 14px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.btn-popover-action:hover { filter: brightness(1.1); }
+.btn-popover-cancel {
+  background: none; border: 1px solid var(--border); color: var(--text-muted);
+  padding: 5px 12px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; white-space: nowrap;
+}
+.btn-popover-cancel:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 
 <script>
@@ -376,7 +524,7 @@ async function generateCoverLetter() {
     });
     const data = await resp.json();
     if (data.ok) {
-      status.innerHTML = '✓ <a href="/resumes/<%= job.id %>-cover-letter.pdf?' + Date.now() + '" style="color:var(--accent)" download>Download</a>';
+      status.innerHTML = '✓ <a href="/resumes/<%= job.id %>/cover-letter.pdf?' + Date.now() + '" style="color:var(--accent)" download>Download</a>';
       status.style.color = 'var(--green)';
       btn.textContent = '🔄 Regenerate';
     } else {
@@ -390,6 +538,47 @@ async function generateCoverLetter() {
   btn.disabled = false;
 }
 
+async function markApplied() {
+  if (!confirm('Mark this job as applied?')) return;
+  const statusEl = document.getElementById('app-status');
+  statusEl.textContent = '⏳ Marking...';
+  try {
+    const resp = await fetch('/api/jobs/<%= job.id %>/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'submitted' }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      window.location.reload();
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+  }
+}
+async function recordResponse(type) {
+  const labels = { replied: 'Replied', interview: 'Interview', offer: 'Offer', rejected: 'Rejected', accepted: 'Accepted' };
+  if (!confirm(`Record response: "${labels[type] || type}"?`)) return;
+  const statusEl = document.getElementById('app-status');
+  statusEl.textContent = '⏳ Recording...';
+  try {
+    const resp = await fetch('/api/jobs/<%= job.id %>/response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ responseType: type }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      window.location.reload();
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+  }
+}
 async function deleteJob(id, label) {
   if (!confirm(`Delete job #${id}: "${label}"?\n\nThis is permanent and cannot be undone.`)) return;
   const resp = await fetch(`/api/jobs/${id}/delete`, { method: 'POST' });
@@ -399,6 +588,124 @@ async function deleteJob(id, label) {
     const data = await resp.json();
     alert(`Delete failed: ${data.error}`);
   }
+}
+
+// ---- pipeline stage interaction -----------------------------------------------
+
+let popoverStep = '';
+
+function showStagePopover(event, step, label, actionType) {
+  popoverStep = step;
+  const popover = document.getElementById('stage-popover');
+  const msg = document.getElementById('popover-msg');
+  const actionBtn = document.getElementById('popover-action-btn');
+
+  const isRestart = actionType === 'restart';
+  msg.textContent = isRestart
+    ? `Restart from "${label}"? This will re-run extract→score→compose→audit from this point.`
+    : `Re-run "${label}" for this job?`;
+
+  actionBtn.textContent = isRestart ? `↻ Restart from ${label}` : `↻ Re-run ${label}`;
+  actionBtn.onclick = () => {
+    hidePopover();
+    runFromStage(step);
+  };
+
+  popover.style.display = 'block';
+}
+
+function hidePopover() {
+  document.getElementById('stage-popover').style.display = 'none';
+  popoverStep = '';
+}
+
+async function runFromStage(stage) {
+  const statusEl = document.getElementById('run-from-status');
+  const btn = document.getElementById('btn-run-pipeline');
+  statusEl.textContent = '⏳ Starting pipeline...';
+  statusEl.style.color = 'var(--yellow)';
+  if (btn) btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '✓ Pipeline started — polling...';
+      statusEl.style.color = 'var(--green)';
+      pollPipelineStatus();
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+      statusEl.style.color = 'var(--red)';
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+    statusEl.style.color = 'var(--red)';
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runFullPipeline() {
+  if (!confirm('Run the full pipeline for this job? This will execute extract → score → compose → audit.')) return;
+  const statusEl = document.getElementById('run-from-status');
+  const btn = document.getElementById('btn-run-pipeline');
+  statusEl.textContent = '⏳ Starting pipeline...';
+  statusEl.style.color = 'var(--yellow)';
+  if (btn) btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId: <%= job.id %> }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '✓ Pipeline started — polling...';
+      statusEl.style.color = 'var(--green)';
+      pollPipelineStatus();
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+      statusEl.style.color = 'var(--red)';
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+    statusEl.style.color = 'var(--red)';
+    if (btn) btn.disabled = false;
+  }
+}
+
+function pollPipelineStatus(attempts = 0) {
+  const maxAttempts = 300; // 5 minutes at 1s intervals
+  if (attempts >= maxAttempts) {
+    const statusEl = document.getElementById('run-from-status');
+    if (statusEl) { statusEl.textContent = '⚠ Timed out waiting for pipeline'; statusEl.style.color = 'var(--yellow)'; }
+    return;
+  }
+  setTimeout(async () => {
+    try {
+      const resp = await fetch('/api/run/status');
+      const data = await resp.json();
+      if (!data.running) {
+        // Pipeline finished — reload the page
+        window.location.reload();
+      } else {
+        const statusEl = document.getElementById('run-from-status');
+        if (statusEl) {
+          statusEl.textContent = `⏳ ${data.message || 'Running...'}`;
+          statusEl.style.color = 'var(--yellow)';
+        }
+        pollPipelineStatus(attempts + 1);
+      }
+    } catch (err) {
+      pollPipelineStatus(attempts + 1);
+    }
+  }, 1000);
 }
 </script>
 <%- include('_foot') %>

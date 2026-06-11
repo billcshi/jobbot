@@ -11,15 +11,18 @@
 
 import express from 'express';
 import path from 'node:path';
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { getDb } from '../db/client.js';
 import { deleteJob, deleteByTier, deleteByStatus } from '../jobs/delete.js';
 import { addUrl } from '../jobs/add-url.js';
 import { extractSalaryRanges } from '../jobs/market-data.js';
-import { PROJECT_ROOT, LOCAL_DIR, RESUMES_DIR, CANDIDATE_PATH, PREFERENCES_PATH, ANSWERS_PATH } from '../utils/paths.js';
+import { PROJECT_ROOT, LOCAL_DIR, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
+import { readCandidate, readPreferences, readAnswers, writeProfile } from '../utils/profile-store.js';
 import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
+import { getPipelineManager } from '../jobs/pipeline-state.js';
+import { setActiveUser, resolveUserId, resolveUserName, getActiveUserId, getActiveUserName, listUsers, addUser } from '../utils/user-context.js';
 
 const app = express();
 
@@ -39,6 +42,55 @@ app.locals.cache = false;
 
 // Serve generated PDFs as static files
 app.use('/resumes', express.static(RESUMES_DIR));
+
+// ----- cookie parser (minimal, no dependency) ----------------------------------
+
+app.use((req, _res, next) => {
+  const raw = req.headers.cookie;
+  const cookies: Record<string, string> = {};
+  if (raw) {
+    for (const part of raw.split(';')) {
+      const eq = part.indexOf('=');
+      if (eq > 0) cookies[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (req as any).cookies = cookies;
+  next();
+});
+
+// ----- user context middleware -----------------------------------------------
+
+/**
+ * Resolve the active user per-request from cookie or query param.
+ * Stores user info on res.locals — NEVER mutates the global singleton.
+ * This allows concurrent web users to see their own scores without
+ * interfering with each other.
+ *
+ * The global setActiveUser() / getActiveUserId() pair is for CLI use only.
+ */
+app.use((req, res, next) => {
+  // Priority: query param (for explicit switching) → cookie → default
+  const userParam = typeof req.query._user === 'string' ? req.query._user : undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cookies = (req as any).cookies as Record<string, string> | undefined;
+  const userName = userParam || cookies?.active_user || 'default';
+
+  // Resolve user for THIS request only — no global mutation
+  const userId = resolveUserId(userName);
+  res.locals.userId = userId;
+  res.locals.userName = resolveUserName(userId);
+  res.locals.activeUser = res.locals.userName;   // backward compat for views
+  res.locals.activeUserId = userId;              // backward compat for views
+  res.locals.allUsers = listUsers();
+
+  // Set cookie when explicitly switched via query param
+  if (userParam) {
+    res.setHeader('Set-Cookie', `active_user=${userParam}; Max-Age=${365 * 24 * 60 * 60}; HttpOnly; Path=/`);
+  }
+
+  next();
+});
 
 // ----- types ---------------------------------------------------------------
 
@@ -109,53 +161,76 @@ function scoreFmt(s: number | null): string {
 
 app.get('/', (req, res) => {
   const db = getDb();
+  const userId = res.locals.userId;
 
   // Parse query params
   const tierFilter = typeof req.query.tier === 'string' ? req.query.tier.toUpperCase() : null;
   const statusFilter = typeof req.query.status === 'string' ? req.query.status : null;
+  const appliedFilter = typeof req.query.applied === 'string' ? req.query.applied : 'hide'; // "hide" | "only" | "all"
   const sort = typeof req.query.sort === 'string' ? req.query.sort : 'score';
 
-  // Build query
+  // Build query — join user_scores for per-user score display
   const conditions: string[] = [];
   const params: unknown[] = [];
 
   if (tierFilter && ['A', 'B', 'C', 'D'].includes(tierFilter)) {
-    conditions.push('tier = ?');
+    conditions.push('us.tier = ?');
     params.push(tierFilter);
   }
-  if (statusFilter && ['new', 'extracted', 'scored', 'tailored', 'applied', 'archived'].includes(statusFilter)) {
-    conditions.push('status = ?');
+  if (statusFilter && ['new', 'extracted', 'scored', 'composed', 'audited', 'applied', 'archived'].includes(statusFilter)) {
+    conditions.push('j.status = ?');
     params.push(statusFilter);
   }
+
+  // Application filter
+  if (appliedFilter === 'hide') {
+    // Default: hide applied jobs
+    conditions.push("(j.status != 'applied' AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id AND a.user_id = ? AND a.status != 'draft'))");
+    params.push(userId);
+  } else if (appliedFilter === 'only') {
+    conditions.push("(j.status = 'applied' OR EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id AND a.user_id = ? AND a.status != 'draft'))");
+    params.push(userId);
+  }
+  // "all" — no filter
+
+  // Always filter by active user
+  conditions.push('j.user_id = ?');
+  params.push(userId);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   let orderBy: string;
   switch (sort) {
     case 'company':
-      orderBy = 'COALESCE(company, \'zzz\') ASC, id ASC';
+      orderBy = 'COALESCE(j.company, \'zzz\') ASC, j.id ASC';
       break;
     case 'title':
-      orderBy = 'COALESCE(title, \'zzz\') ASC, id ASC';
+      orderBy = 'COALESCE(j.title, \'zzz\') ASC, j.id ASC';
       break;
     case 'date':
-      orderBy = 'discovered_at DESC, id ASC';
+      orderBy = 'j.discovered_at DESC, j.id ASC';
       break;
     case 'score':
     default:
-      orderBy = 'COALESCE(score, -1) DESC, id ASC';
+      orderBy = 'COALESCE(us.score, -1) DESC, j.id ASC';
       break;
   }
 
-  const query = `SELECT * FROM jobs ${where} ORDER BY ${orderBy}`;
-  const jobs = db.prepare(query).all(...params) as JobRow[];
+  const query = `
+    SELECT j.*, us.score as user_score, us.tier as user_tier, us.score_reason as user_score_reason
+    FROM jobs j
+    LEFT JOIN user_scores us ON us.job_id = j.id AND us.user_id = ?
+    ${where}
+    ORDER BY ${orderBy}
+  `;
+  const jobs = db.prepare(query).all(userId, ...params) as (JobRow & { user_score: number | null; user_tier: string | null; user_score_reason: string | null })[];
 
-  // Tier counts (includes all scored jobs including score=0 deal-breakers)
+  // Tier counts (per-user, from user_scores)
   const tierCounts = db.prepare(`
-    SELECT tier, COUNT(*) as count FROM jobs
-    WHERE tier IS NOT NULL AND score IS NOT NULL
+    SELECT tier, COUNT(*) as count FROM user_scores
+    WHERE user_id = ?
     GROUP BY tier
-  `).all() as { tier: string; count: number }[];
+  `).all(userId) as { tier: string; count: number }[];
 
   const counts: TierCount = { A: 0, B: 0, C: 0, D: 0 };
   for (const row of tierCounts) {
@@ -164,32 +239,38 @@ app.get('/', (req, res) => {
     }
   }
 
-  const totalJobs = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;
+  const totalJobs = (db.prepare('SELECT COUNT(*) as count FROM jobs WHERE user_id = ?').get(userId) as { count: number }).count;
 
   // Pipeline stage counts for funnel
   const stageCounts = {
     ingested: totalJobs,
-    extracted: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE title IS NOT NULL').get() as { c: number }).c,
-    scored: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE score IS NOT NULL').get() as { c: number }).c,
-    composed: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status IN ('composed','audited')").get() as { c: number }).c,
-    audited: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'audited'").get() as { c: number }).c,
+    extracted: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE title IS NOT NULL AND user_id = ?').get(userId) as { c: number }).c,
+    scored: (db.prepare('SELECT COUNT(*) as c FROM user_scores WHERE user_id = ?').get(userId) as { c: number }).c,
+    composed: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status IN ('composed','audited') AND user_id = ?").get(userId) as { c: number }).c,
+    audited: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'audited' AND user_id = ?").get(userId) as { c: number }).c,
   };
+
+  // Applied count for this user
+  const appliedCount = (db.prepare(
+    "SELECT COUNT(*) as c FROM applications WHERE user_id = ? AND status != 'draft'",
+  ).get(userId) as { c: number }).c;
 
   // Top companies
   const topCompanies = db.prepare(`
     SELECT company, COUNT(*) as count FROM jobs
-    WHERE company IS NOT NULL AND company != ''
+    WHERE user_id = ? AND company IS NOT NULL AND company != ''
     GROUP BY company ORDER BY count DESC LIMIT 8
-  `).all() as { company: string; count: number }[];
+  `).all(userId) as { company: string; count: number }[];
 
   res.render('dashboard', {
     title: 'Dashboard',
     jobs,
     counts,
     totalJobs,
+    appliedCount,
     stageCounts,
     topCompanies,
-    filters: { tier: tierFilter, status: statusFilter, sort },
+    filters: { tier: tierFilter, status: statusFilter, sort, applied: appliedFilter },
     helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt },
   });
 });
@@ -199,22 +280,43 @@ app.get('/', (req, res) => {
 app.get('/jobs/:id', (req, res) => {
   const db = getDb();
   const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
 
   if (!Number.isInteger(jobId) || jobId < 1) {
     res.status(400).send('Invalid job ID');
     return;
   }
 
-  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as JobRow | undefined;
+  // Join user_scores for per-user score
+  const job = db.prepare(`
+    SELECT j.*, us.score as user_score, us.tier as user_tier, us.score_reason as user_score_reason
+    FROM jobs j
+    LEFT JOIN user_scores us ON us.job_id = j.id AND us.user_id = ?
+    WHERE j.id = ? AND j.user_id = ?
+  `).get(userId, jobId, userId) as (JobRow & { user_score: number | null; user_tier: string | null; user_score_reason: string | null }) | undefined;
 
   if (!job) {
     res.status(404).send('Job not found');
     return;
   }
 
+  // Get application for this user
+  const application = db.prepare(
+    'SELECT * FROM applications WHERE job_id = ? AND user_id = ?',
+  ).get(jobId, userId) as {
+    id: number; status: string; submitted_at: string | null;
+    responded_at: string | null; response_type: string | null;
+    notes: string | null;
+  } | undefined;
+
+  // Use per-user score if available, fall back to legacy jobs.score
+  const displayScore = job.user_score ?? job.score;
+  const displayTier = job.user_tier ?? job.tier;
+  const displayReason = job.user_score_reason ?? job.score_reason;
+
   // Parse score_reason into sections
-  const reasonParagraphs = job.score_reason
-    ? job.score_reason.split(/(?<=\.)\s+(?=[A-Z])/).filter(Boolean)
+  const reasonParagraphs = displayReason
+    ? displayReason.split(/(?<=\.)\s+(?=[A-Z])/).filter(Boolean)
     : [];
 
   // Load stage outputs for interactive pipeline
@@ -223,11 +325,11 @@ app.get('/jobs/:id', (req, res) => {
   ).get(jobId) as { pdf_path: string | null } | undefined;
 
   // Check for existing cover letter
-  const clPdfPath = `${RESUMES_DIR}/${jobId}-cover-letter.pdf`;
+  const clPdfPath = `${jobResumeDir(jobId)}/cover-letter.pdf`;
   const hasCoverLetter = existsSync(clPdfPath);
 
   let auditData: { overallScore?: number; contentScore?: number; visualScore?: number; contentIssues?: unknown[]; visualIssues?: unknown[] } | null = null;
-  const auditPath = `${RESUMES_DIR}/audit/${jobId}-audit.json`;
+  const auditPath = `${jobResumeDir(jobId)}/audit.json`;
   if (existsSync(auditPath)) {
     try {
       auditData = JSON.parse(readFileSync(auditPath, 'utf-8'));
@@ -298,6 +400,10 @@ app.get('/jobs/:id', (req, res) => {
   res.render('job-detail', {
     title: job.title || `Job #${job.id}`,
     job,
+    displayScore,
+    displayTier,
+    displayReason,
+    application,
     reasonParagraphs,
     events,
     resumeVersion,
@@ -324,70 +430,66 @@ app.get('/add-urls', (_req, res) => {
 
 app.get('/pipeline', (_req, res) => {
   const db = getDb();
+  const userId = res.locals.userId;
 
-  const totalJobs = (db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }).count;
+  const totalJobs = (db.prepare('SELECT COUNT(*) as count FROM jobs WHERE user_id = ?').get(userId) as { count: number }).count;
 
   // ---- per-stage queue queries ------------------------------------------------
-  // Step 1 (Ingest → Extract): distinguish queued vs failed
-  //   queued = never attempted (no title, no error)
-  //   failed = attempted but failed (no title, has extract error)
-  //   done   = succeeded (has title, moved to Step 2)
   const ingestQueued = db.prepare(
     `SELECT id, url, ats_type FROM jobs
-     WHERE title IS NULL AND (score_reason IS NULL OR score_reason NOT LIKE 'Extract failed:%')
+     WHERE user_id = ? AND title IS NULL AND (score_reason IS NULL OR score_reason NOT LIKE 'Extract failed:%')
      ORDER BY id`,
-  ).all() as { id: number; url: string; ats_type: string }[];
+  ).all(userId) as { id: number; url: string; ats_type: string }[];
   const ingestFailed = db.prepare(
     `SELECT id, url, ats_type, score_reason FROM jobs
-     WHERE title IS NULL AND score_reason LIKE 'Extract failed:%'
+     WHERE user_id = ? AND title IS NULL AND score_reason LIKE 'Extract failed:%'
      ORDER BY id`,
-  ).all() as { id: number; url: string; ats_type: string; score_reason: string }[];
+  ).all(userId) as { id: number; url: string; ats_type: string; score_reason: string }[];
   const ingestDone = totalJobs - ingestQueued.length - ingestFailed.length;
 
   // Step 2 (Extract → Score): queued/failed/done
   const extractQueued = db.prepare(
     `SELECT id, title, company FROM jobs
-     WHERE title IS NOT NULL AND score IS NULL
+     WHERE user_id = ? AND title IS NOT NULL AND score IS NULL
      ORDER BY id`,
-  ).all() as { id: number; title: string | null; company: string | null }[];
-  const extractFailed: never[] = []; // scoring doesn't fail, it falls back to deterministic
+  ).all(userId) as { id: number; title: string | null; company: string | null }[];
   const extractDone = (totalJobs - ingestQueued.length - ingestFailed.length) - extractQueued.length;
 
-  // Step 3 results: scored jobs (score IS NOT NULL, includes score=0 deal-breakers)
+  // Step 3 results: scored jobs
   const scoredCount = (db.prepare(
-    'SELECT COUNT(*) as count FROM jobs WHERE score IS NOT NULL',
-  ).get() as { count: number }).count;
+    'SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND score IS NOT NULL',
+  ).get(userId) as { count: number }).count;
 
   // Step 4 (Score → Compose): only A/B/C tier, exclude D (deal-breakers)
   const composeQueued = db.prepare(
     `SELECT id, title, company FROM jobs
-     WHERE status = 'scored' AND score > 0 AND tier != 'D'
+     WHERE user_id = ? AND status = 'scored' AND score > 0 AND tier != 'D'
      ORDER BY id`,
-  ).all() as { id: number; title: string | null; company: string | null }[];
+  ).all(userId) as { id: number; title: string | null; company: string | null }[];
   const composeDone = (db.prepare(
-    `SELECT COUNT(*) as count FROM jobs WHERE status IN ('composed', 'audited')`,
-  ).get() as { count: number }).count;
+    `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND status IN ('composed', 'audited')`,
+  ).get(userId) as { count: number }).count;
   const composeEligible = composeDone + composeQueued.length;
   const dSkipped = (db.prepare(
-    `SELECT COUNT(*) as count FROM jobs WHERE status = 'scored' AND tier = 'D'`,
-  ).get() as { count: number }).count;
+    `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND status = 'scored' AND tier = 'D'`,
+  ).get(userId) as { count: number }).count;
 
   // Step 5 (Compose → Audit): queued = composed but not audited
   const auditQueued = db.prepare(
     `SELECT id, title, company FROM jobs
-     WHERE status = 'composed'
+     WHERE user_id = ? AND status = 'composed'
      ORDER BY id`,
-  ).all() as { id: number; title: string | null; company: string | null }[];
+  ).all(userId) as { id: number; title: string | null; company: string | null }[];
   const auditDone = (db.prepare(
-    `SELECT COUNT(*) as count FROM jobs WHERE status = 'audited'`,
-  ).get() as { count: number }).count;
+    `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND status = 'audited'`,
+  ).get(userId) as { count: number }).count;
 
-  // Tier distribution (includes all scored jobs)
+  // Tier distribution (per-user scored jobs)
   const tierRows = db.prepare(`
     SELECT tier, COUNT(*) as count FROM jobs
-    WHERE tier IS NOT NULL AND score IS NOT NULL
+    WHERE user_id = ? AND tier IS NOT NULL AND score IS NOT NULL
     GROUP BY tier
-  `).all() as { tier: string; count: number }[];
+  `).all(userId) as { tier: string; count: number }[];
 
   const tierCounts: TierCount = { A: 0, B: 0, C: 0, D: 0 };
   for (const row of tierRows) {
@@ -406,7 +508,6 @@ app.get('/pipeline', (_req, res) => {
     // Step 2
     extractDone,
     extractQueued,
-    extractFailed,
     // Step 3
     scoredCount,
     tierCounts,
@@ -515,18 +616,22 @@ app.get('/ai-log', (_req, res) => {
 
 // ----- routes: profile pages -----------------------------------------------
 
-const PROFILE_FILES = {
-  candidate: { path: CANDIDATE_PATH, label: 'Candidate Profile', description: 'Work history, education, skills, links. The source of truth for resume tailoring.' },
-  preferences: { path: PREFERENCES_PATH, label: 'Preferences', description: 'Job titles, locations, industries, deal-breakers, and scoring weights.' },
-  answers: { path: ANSWERS_PATH, label: 'Application Answers', description: 'Standard application questions. Sensitive — never shared or uploaded.' },
-} as const;
+const PROFILE_LABELS: Record<string, { label: string; description: string }> = {
+  candidate: { label: 'Candidate Profile', description: 'Work history, education, skills, links. The source of truth for resume tailoring.' },
+  preferences: { label: 'Preferences', description: 'Job titles, locations, industries, deal-breakers, and scoring weights.' },
+  answers: { label: 'Application Answers', description: 'Standard application questions. Sensitive — never shared or uploaded.' },
+};
 
-type ProfileFile = keyof typeof PROFILE_FILES;
+type ProfileFile = 'candidate' | 'preferences' | 'answers';
 
-function readProfileYaml(file: ProfileFile): string {
-  const p = PROFILE_FILES[file];
-  if (!existsSync(p.path)) return '';
-  return readFileSync(p.path, 'utf-8');
+/** Read a profile section from the database for a given user. */
+function readProfile(file: ProfileFile, userId: number): string {
+  switch (file) {
+    case 'candidate': return readCandidate(userId);
+    case 'preferences': return readPreferences(userId);
+    case 'answers': return readAnswers(userId);
+    default: return '';
+  }
 }
 
 function getYamlSections(yaml: string): string[] {
@@ -539,9 +644,10 @@ function getYamlSections(yaml: string): string[] {
 }
 
 app.get('/profile', (_req, res) => {
-  const candidate = readProfileYaml('candidate');
-  const prefs = readProfileYaml('preferences');
-  const answers = readProfileYaml('answers');
+  const userId = res.locals.userId;
+  const candidate = readProfile('candidate', userId);
+  const prefs = readProfile('preferences', userId);
+  const answers = readProfile('answers', userId);
 
   res.render('profile', {
     title: 'Profile',
@@ -556,19 +662,19 @@ app.get('/profile', (_req, res) => {
 
 app.get('/profile/:file', (req, res) => {
   const file = req.params.file as ProfileFile;
-  if (!(file in PROFILE_FILES)) {
+  if (!(file in PROFILE_LABELS)) {
     res.status(404).send('Profile file not found');
     return;
   }
 
-  const info = PROFILE_FILES[file];
-  const yamlRaw = readProfileYaml(file);
+  const info = PROFILE_LABELS[file]!;
+  const yamlRaw = readProfile(file, res.locals.userId);
 
   res.render('profile-edit', {
     title: `${info.label} — Profile`,
     profileLabel: info.label,
     profileFile: file,
-    filePath: `local/profile/${file}.yaml`,
+    filePath: `Database: user_preferences.${file}`,
     description: info.description,
     yamlRaw,
     yamlEscaped: yamlRaw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -579,7 +685,7 @@ app.get('/profile/:file', (req, res) => {
 
 app.put('/api/profile/:file', (req, res) => {
   const file = req.params.file as ProfileFile;
-  if (!(file in PROFILE_FILES)) {
+  if (!(file in PROFILE_LABELS)) {
     res.status(400).json({ error: 'Invalid profile file' });
     return;
   }
@@ -591,8 +697,8 @@ app.put('/api/profile/:file', (req, res) => {
   }
 
   try {
-    writeFileSync(PROFILE_FILES[file].path, yaml, 'utf-8');
-    logger.info(`Updated profile: ${file}.yaml`);
+    writeProfile(res.locals.userId, file, yaml);
+    logger.info(`Updated profile for ${res.locals.userName}: ${file}`);
     res.json({ ok: true });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -602,7 +708,7 @@ app.put('/api/profile/:file', (req, res) => {
 
 app.post('/api/profile/:file/ai-edit', async (req, res) => {
   const file = req.params.file as ProfileFile;
-  if (!(file in PROFILE_FILES)) {
+  if (!(file in PROFILE_LABELS)) {
     res.status(400).json({ error: 'Invalid profile file' });
     return;
   }
@@ -619,9 +725,10 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
     return;
   }
 
-  const currentYaml = readProfileYaml(file);
+  const userId = res.locals.userId;
+  const currentYaml = readProfile(file, userId);
   if (!currentYaml) {
-    res.status(404).json({ error: `Profile file not found: ${file}.yaml` });
+    res.status(404).json({ error: `Profile not found for ${res.locals.userName}: ${file}.yaml` });
     return;
   }
 
@@ -722,55 +829,22 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   }
 });
 
-// ----- run service state ----------------------------------------------------
-
-interface RunState {
-  running: boolean;
-  stage: 'idle' | 'extract' | 'score' | 'compose' | 'audit' | 'complete';
-  startedAt: string | null;
-  current: number;
-  total: number;
-  succeeded: number;
-  failed: number;
-  message: string;
-}
-
-const runState: RunState = {
-  running: false,
-  stage: 'idle',
-  startedAt: null,
-  current: 0,
-  total: 0,
-  succeeded: 0,
-  failed: 0,
-  message: '',
-};
-
-function resetRunState(): void {
-  runState.running = false;
-  runState.stage = 'idle';
-  runState.startedAt = null;
-  runState.current = 0;
-  runState.total = 0;
-  runState.succeeded = 0;
-  runState.failed = 0;
-  runState.message = '';
-}
-
 // ----- routes: run API (POST-based, launches background pipeline) ------------
 
 app.post('/api/run', async (req, res) => {
-  if (runState.running) {
-    res.status(409).json({ error: 'Pipeline is already running', ...runState });
+  const manager = getPipelineManager();
+  const userId = res.locals.userId;
+
+  // Check if THIS user already has a running pipeline (not global)
+  if (manager.isRunning(userId)) {
+    res.status(409).json({ error: 'Your pipeline is already running. Wait for it to finish or cancel it.' });
     return;
   }
 
   const { step, jobId } = (req.body || {}) as { step?: string; jobId?: number };
 
-  // Reset and mark running
-  resetRunState();
-  runState.running = true;
-  runState.startedAt = new Date().toISOString();
+  // Get (or create) per-user pipeline state
+  const state = manager.get(userId);
 
   // Respond immediately with 202 Accepted
   res.status(202).json({ ok: true, message: 'Pipeline started' });
@@ -778,73 +852,122 @@ app.post('/api/run', async (req, res) => {
   // Run in background (don't await — fire and update state)
   (async () => {
     try {
-      const { runExtract, runScore, runCompose, runAudit, runJob } = await import('../jobs/run.js');
+      // Set the active user for the duration of this background pipeline.
+      setActiveUser(userId);
+
+      const { runExtract, runScore, runCompose, runAudit, runJob, runAll } = await import('../jobs/run.js');
 
       if (jobId) {
-        // Single job — run through all stages
-        runState.stage = 'extract';
-        runState.message = `Running pipeline for job #${jobId}`;
-        await runJob(jobId);
-        runState.stage = 'complete';
-        runState.message = `Pipeline complete for job #${jobId}`;
+        await runJob(jobId, state);
       } else if (step === 'extract') {
-        runState.stage = 'extract';
-        runState.message = 'Extracting queued jobs...';
-        // Patch runExtract to update progress
-        await runExtract();
-        runState.stage = 'complete';
-        runState.message = 'Extract complete';
+        await runExtract(5, state);
       } else if (step === 'score') {
-        runState.stage = 'score';
-        runState.message = 'Scoring queued jobs...';
-        await runScore();
-        runState.stage = 'complete';
-        runState.message = 'Score complete';
+        await runScore(3, state);
       } else if (step === 'compose') {
-        runState.stage = 'compose';
-        runState.message = 'Composing queued jobs...';
-        await runCompose();
-        runState.stage = 'complete';
-        runState.message = 'Compose complete';
+        await runCompose(2, state);
       } else if (step === 'audit') {
-        runState.stage = 'audit';
-        runState.message = 'Auditing queued jobs...';
-        await runAudit();
-        runState.stage = 'complete';
-        runState.message = 'Audit complete';
+        await runAudit(2, state);
       } else {
         // Full pipeline
-        runState.stage = 'extract';
-        runState.message = 'Extracting...';
-        await runExtract();
-
-        runState.stage = 'score';
-        runState.message = 'Scoring...';
-        await runScore();
-
-        runState.stage = 'compose';
-        runState.message = 'Composing...';
-        await runCompose();
-
-        runState.stage = 'audit';
-        runState.message = 'Auditing...';
-        await runAudit();
-
-        runState.stage = 'complete';
-        runState.message = 'Full pipeline complete';
+        await runAll(state);
       }
     } catch (err) {
-      runState.message = err instanceof Error ? err.message : String(err);
-      runState.stage = 'idle';
       logger.error('Pipeline run failed', err);
-    } finally {
-      runState.running = false;
     }
   })();
 });
 
 app.get('/api/run/status', (_req, res) => {
-  res.json(runState);
+  const userId = res.locals.userId;
+  const state = getPipelineManager().get(userId);
+  const snap = state.snapshot();
+
+  // Compute simplified fields for backward compat
+  let stage: string = snap.stage ?? 'idle';
+  let current = 0;
+  let total = 0;
+  let succeeded = 0;
+  let failed = 0;
+
+  if (snap.stage && snap.stages[snap.stage]) {
+    const ss = snap.stages[snap.stage];
+    total = ss.total;
+    succeeded = ss.completed.length;
+    failed = ss.failed.length;
+    current = ss.running.length + succeeded + failed;
+  }
+
+  res.json({
+    running: snap.running,
+    stage,
+    startedAt: snap.startedAt,
+    current,
+    total,
+    succeeded,
+    failed,
+    message: snap.running
+      ? `Running ${stage}: ${current}/${total} (${succeeded} done, ${failed} failed)`
+      : snap.finishedAt ? 'Pipeline complete' : 'Idle',
+    // Also include full snapshot for richer UIs
+    snapshot: snap,
+  });
+});
+
+// ----- routes: pipeline visibility & control ----------------------------------
+
+/**
+ * GET /api/pipeline/status
+ * Returns the requesting user's pipeline state snapshot for live UI rendering.
+ * Each user sees only their own pipeline.
+ */
+app.get('/api/pipeline/status', (_req, res) => {
+  const userId = res.locals.userId;
+  const state = getPipelineManager().get(userId);
+  res.json(state.snapshot());
+});
+
+/**
+ * POST /api/pipeline/cancel
+ * Cancels the requesting user's currently running pipeline.
+ */
+app.post('/api/pipeline/cancel', (_req, res) => {
+  const userId = res.locals.userId;
+  const state = getPipelineManager().get(userId);
+  const cancelled = state.cancel();
+  res.json({ ok: true, cancelled });
+});
+
+/**
+ * POST /api/pipeline/tasks/:jobId/cancel
+ * Cancel a single running task within the requesting user's pipeline.
+ */
+app.post('/api/pipeline/tasks/:jobId/cancel', (req, res) => {
+  const jobId = Number(req.params.jobId);
+  if (!Number.isInteger(jobId) || jobId < 1) {
+    res.status(400).json({ error: 'Invalid job ID' });
+    return;
+  }
+
+  const userId = res.locals.userId;
+  const state = getPipelineManager().get(userId);
+  const snap = state.snapshot();
+
+  // Find which stage this job is in
+  let foundStage: import('../jobs/pipeline-state.js').PipelineStage | null = null;
+  for (const stage of ['extract', 'score', 'compose', 'audit'] as const) {
+    if (snap.stages[stage]?.running.includes(jobId)) {
+      foundStage = stage;
+      break;
+    }
+  }
+
+  if (!foundStage) {
+    res.status(404).json({ error: `Job #${jobId} is not currently running in any stage` });
+    return;
+  }
+
+  const cancelled = state.cancelTask(foundStage, jobId);
+  res.json({ ok: true, cancelled, jobId, stage: foundStage });
 });
 
 // Run a single step for a specific job (non-blocking)
@@ -1019,6 +1142,245 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
   })();
 });
 
+// ----- routes: run-from API (restart pipeline from a stage) -------------------
+
+/**
+ * POST /api/jobs/:id/run-from
+ * Reset a job to before the given stage and run the pipeline from there for
+ * THIS single job only (unlike /api/run which runs all eligible jobs).
+ * Body: { stage: 'extract' | 'score' | 'compose' | 'audit' }
+ */
+app.post('/api/jobs/:id/run-from', async (req, res) => {
+  const jobId = Number(req.params.id);
+  const { stage } = (req.body || {}) as { stage?: string };
+  const userId = res.locals.userId;
+  const db = getDb();
+
+  if (!stage || !['extract', 'score', 'compose', 'audit'].includes(stage)) {
+    res.status(400).json({ error: 'Valid stage required: extract, score, compose, or audit' });
+    return;
+  }
+
+  if (!Number.isInteger(jobId) || jobId < 1) {
+    res.status(400).json({ error: 'Invalid job ID' });
+    return;
+  }
+
+  // Concurrency guard: one pipeline per user at a time
+  const manager = getPipelineManager();
+  if (manager.isRunning(userId)) {
+    res.status(409).json({ error: 'You already have a running pipeline. Wait for it to finish or cancel it first.' });
+    return;
+  }
+
+  const job = db.prepare('SELECT id, status, score FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as
+    { id: number; status: string; score: number | null } | undefined;
+  if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
+
+  // Reset DB to before the target stage
+  if (stage === 'extract') {
+    db.prepare(`UPDATE jobs SET title=NULL, company=NULL, location=NULL, description=NULL, apply_url=NULL,
+                score=NULL, tier=NULL, score_reason=NULL, status='new',
+                updated_at=datetime('now') WHERE id=?`).run(jobId);
+    // Also clear user_scores for this job
+    db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+  } else if (stage === 'score') {
+    db.prepare(`UPDATE jobs SET score=NULL, tier=NULL, score_reason=NULL, status='extracted',
+                updated_at=datetime('now') WHERE id=?`).run(jobId);
+    db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+  } else if (stage === 'compose') {
+    db.prepare(`UPDATE jobs SET status='scored', updated_at=datetime('now') WHERE id=?`).run(jobId);
+  } else if (stage === 'audit') {
+    db.prepare(`UPDATE jobs SET status='composed', updated_at=datetime('now') WHERE id=?`).run(jobId);
+  }
+
+  // Log event
+  db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'run_from', ?, datetime('now'))")
+    .run(jobId, `Restart pipeline from ${stage}`);
+
+  // Respond immediately
+  res.status(202).json({ ok: true, message: `Restarting pipeline from ${stage} for job #${jobId}` });
+
+  // Run this single job through the pipeline in background
+  const pipelineState = manager.get(userId);
+  const pipelineUserId = userId;
+
+  (async () => {
+    try {
+      setActiveUser(pipelineUserId);
+      const { extractJob: runFromExtract } = await import('../jobs/extract.js');
+      const { composeJob: runFromCompose } = await import('../jobs/compose.js');
+      const { auditJob: runFromAudit } = await import('../jobs/audit.js');
+      const { extractMarketData } = await import('../jobs/market-data.js');
+      const MAX_AUDIT_RETRIES = 3;
+
+      const stageOrder = ['extract', 'score', 'compose', 'audit'] as const;
+      const startIdx = stageOrder.indexOf(stage as typeof stageOrder[number]);
+
+      pipelineState.startPipeline();
+      for (let i = startIdx; i < stageOrder.length; i++) {
+        const s = stageOrder[i]!;
+        pipelineState.startStage(s, 1);
+      }
+
+      // Helper: get current job row after each stage
+      const getJob = () => db.prepare(
+        'SELECT id, title, company, location, description, score, tier, status FROM jobs WHERE id = ?',
+      ).get(jobId) as {
+        id: number; title: string | null; company: string | null; location: string | null;
+        description: string | null; score: number | null; tier: string | null; status: string;
+      } | undefined;
+
+      // --- Extract ---
+      if (startIdx <= 0) {
+        const ctrl = pipelineState.taskStarted('extract', jobId);
+        try {
+          const result = await runFromExtract(jobId, ctrl.signal);
+          if (result.success) {
+            console.log(`  ✓ run-from #${jobId} extract: "${result.title}" at ${result.company}`);
+            pipelineState.updateTaskMeta('extract', jobId, { title: result.title, company: result.company });
+            pipelineState.taskCompleted('extract', jobId);
+          } else {
+            console.log(`  ✕ run-from #${jobId} extract: ${result.error}`);
+            pipelineState.taskFailed('extract', jobId);
+            pipelineState.finishPipeline();
+            return;
+          }
+        } catch (err: any) {
+          if (err?.name === 'AbortError' || ctrl.signal.aborted) {
+            pipelineState.taskCancelled('extract', jobId);
+          } else {
+            pipelineState.taskFailed('extract', jobId);
+          }
+          pipelineState.finishPipeline();
+          return;
+        }
+      }
+
+      // --- Score ---
+      if (startIdx <= 1) {
+        const jobRow = getJob();
+        if (!jobRow) { pipelineState.finishPipeline(); return; }
+        const ctrl = pipelineState.taskStarted('score', jobId, { title: jobRow.title ?? undefined, company: jobRow.company ?? undefined });
+        try {
+          const { scoreJobWithLLM: llmScore } = await import('../jobs/scorers/llm.js');
+          const scoreResult = await llmScore(jobRow, undefined, ctrl.signal);
+          db.prepare(
+            "UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?",
+          ).run(scoreResult.score, scoreResult.tier, scoreResult.reason, jobId);
+          db.prepare(
+            "INSERT INTO user_scores (job_id, user_id, score, tier, score_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(job_id, user_id) DO UPDATE SET score = excluded.score, tier = excluded.tier, score_reason = excluded.score_reason, updated_at = datetime('now')",
+          ).run(jobId, pipelineUserId, scoreResult.score, scoreResult.tier, scoreResult.reason);
+          console.log(`  ✓ run-from #${jobId} score: ${scoreResult.tier} (${scoreResult.score.toFixed(2)})`);
+          pipelineState.taskCompleted('score', jobId);
+          extractMarketData(jobRow);
+        } catch (err: any) {
+          if (err?.name === 'AbortError' || ctrl.signal.aborted) {
+            pipelineState.taskCancelled('score', jobId);
+            pipelineState.finishPipeline();
+            return;
+          }
+          logger.error(`run-from score #${jobId}: ${err?.message || err}`);
+          const { scoreJobDeterministic: detScore } = await import('../jobs/scorers/deterministic.js');
+          const prefs: any = { preferred_titles: [], preferred_locations: { remote: false, cities: [] }, preferred_companies: [], preferred_industries: [], deal_breakers: { description: '', keywords: [] }, weights: {}, tiers: { A: 0.8, B: 0.65, C: 0.5, D: 0 } };
+          const fallback = detScore(jobRow, prefs);
+          db.prepare("UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?").run(fallback.score, fallback.tier, fallback.reason, jobId);
+          db.prepare("INSERT INTO user_scores (job_id, user_id, score, tier, score_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(job_id, user_id) DO UPDATE SET score = excluded.score, tier = excluded.tier, score_reason = excluded.score_reason, updated_at = datetime('now')").run(jobId, pipelineUserId, fallback.score, fallback.tier, fallback.reason);
+          console.log(`  ⚠ run-from #${jobId} score fallback: ${fallback.tier}`);
+          pipelineState.taskCompleted('score', jobId);
+        }
+      }
+
+      // --- Compose + Audit loop ---
+      if (startIdx <= 2) {
+        const jobRow = getJob();
+        if (!jobRow) { pipelineState.finishPipeline(); return; }
+        if (jobRow.score === 0 || jobRow.tier === 'D') {
+          console.log(`  - run-from #${jobId} compose: skipped (tier D, deal-breaker)`);
+          pipelineState.finishPipeline();
+          return;
+        }
+
+        const meta = { title: jobRow.title ?? undefined, company: jobRow.company ?? undefined };
+
+        for (let attempt = 0; attempt < MAX_AUDIT_RETRIES; attempt++) {
+          const current = getJob();
+          if (!current) break;
+
+          // Compose
+          const composeCtrl = pipelineState.taskStarted('compose', jobId, meta);
+          try {
+            const composeResult = await runFromCompose(jobId, undefined, composeCtrl.signal);
+            if (composeResult.success) {
+              console.log(`  ✓ run-from #${jobId} compose: ${composeResult.pdfPath}`);
+              pipelineState.taskCompleted('compose', jobId);
+            } else {
+              console.log(`  ✕ run-from #${jobId} compose: ${composeResult.error}`);
+              pipelineState.taskFailed('compose', jobId);
+              pipelineState.finishPipeline();
+              return;
+            }
+          } catch (err: any) {
+            if (err?.name === 'AbortError' || composeCtrl.signal.aborted) {
+              pipelineState.taskCancelled('compose', jobId);
+            } else {
+              pipelineState.taskFailed('compose', jobId);
+            }
+            pipelineState.finishPipeline();
+            return;
+          }
+
+          // Audit (if at this stage)
+          if (startIdx <= 3) {
+            const afterCompose = getJob();
+            if (afterCompose?.status === 'audited') {
+              console.log(`  - run-from #${jobId} audit: already audited, skipping`);
+              pipelineState.finishPipeline();
+              return;
+            }
+            if (afterCompose?.status !== 'composed') break;
+
+            const auditCtrl = pipelineState.taskStarted('audit', jobId, meta);
+            try {
+              const auditResult = await runFromAudit(jobId, auditCtrl.signal);
+              if (!auditResult.success) {
+                console.log(`  ✕ run-from #${jobId} audit: ${auditResult.error}`);
+                pipelineState.taskFailed('audit', jobId);
+                pipelineState.finishPipeline();
+                return;
+              }
+              const currentStatus = getJob();
+              if (currentStatus?.status === 'audited') {
+                console.log(`  ✓ run-from #${jobId} audit: PASSED (${auditResult.overallScore}/100)`);
+                pipelineState.taskCompleted('audit', jobId);
+                pipelineState.finishPipeline();
+                return;
+              }
+              console.log(`  ↻ run-from #${jobId} audit: FAILED — re-composing...`);
+              pipelineState.taskCompleted('audit', jobId);
+            } catch (err: any) {
+              if (err?.name === 'AbortError') {
+                pipelineState.taskCancelled('audit', jobId);
+              } else {
+                pipelineState.taskFailed('audit', jobId);
+              }
+              pipelineState.finishPipeline();
+              return;
+            }
+          }
+        }
+        console.log(`  ✕ run-from #${jobId}: audit gave up after ${MAX_AUDIT_RETRIES} attempts`);
+      }
+
+      pipelineState.finishPipeline();
+      console.log(`\n=== run-from #${jobId} complete ===`);
+    } catch (err) {
+      logger.error(`run-from #${jobId} failed`, err);
+      pipelineState.finishPipeline();
+    }
+  })();
+});
+
 // ----- routes: batch add API ------------------------------------------------
 
 app.post('/api/jobs/add-urls', (req, res) => {
@@ -1054,8 +1416,12 @@ app.post('/api/jobs/add-urls', (req, res) => {
 });
 
 app.post('/api/jobs/add-urls-and-run', async (req, res) => {
-  if (runState.running) {
-    res.status(409).json({ error: 'Pipeline is already running', ...runState });
+  const manager = getPipelineManager();
+  const userId = res.locals.userId;
+
+  // Check if THIS user already has a running pipeline
+  if (manager.isRunning(userId)) {
+    res.status(409).json({ error: 'Your pipeline is already running. Wait for it to finish or cancel it.' });
     return;
   }
 
@@ -1088,10 +1454,6 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
   const errorCount = results.filter((r: { added: boolean }) => !r.added).length;
 
   // Start pipeline in background
-  resetRunState();
-  runState.running = true;
-  runState.startedAt = new Date().toISOString();
-
   res.status(202).json({
     ok: true,
     message: `${addedCount} added, ${duplicateCount} duplicates, ${errorCount} errors. Pipeline starting...`,
@@ -1101,19 +1463,18 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
     results,
   });
 
+  // Get per-user pipeline state and capture userId before going async
+  const pipelineState = manager.get(userId);
+  const pipelineUserId = userId;
+
   // Run full pipeline in background
   (async () => {
     try {
-      const { runAll: runAllPipeline } = await import('../jobs/run.js');
-      await runAllPipeline();
-      runState.stage = 'complete';
-      runState.message = 'Full pipeline complete';
+      setActiveUser(pipelineUserId);
+      const { runAll } = await import('../jobs/run.js');
+      await runAll(pipelineState);
     } catch (err) {
-      runState.message = err instanceof Error ? err.message : String(err);
-      runState.stage = 'idle';
       logger.error('Pipeline run failed', err);
-    } finally {
-      runState.running = false;
     }
   })();
 });
@@ -1195,9 +1556,21 @@ app.get('/api/discover', async (req, res) => {
 
 app.post('/api/jobs/:id/delete', (req, res) => {
   const jobId = Number(req.params.id);
+  const db = getDb();
 
   if (!Number.isInteger(jobId) || jobId < 1) {
     res.status(400).json({ error: 'Invalid job ID' });
+    return;
+  }
+
+  // Verify job belongs to this user
+  const job = db.prepare('SELECT user_id FROM jobs WHERE id = ?').get(jobId) as { user_id: number } | undefined;
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  if (job.user_id !== res.locals.userId) {
+    res.status(403).json({ error: 'Not your job' });
     return;
   }
 
@@ -1227,6 +1600,170 @@ app.post('/api/jobs/delete', (req, res) => {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: msg });
   }
+});
+
+// ----- routes: user management API -----------------------------------------
+
+app.get('/api/users', (_req, res) => {
+  res.json({ users: listUsers(), active: res.locals.userName });
+});
+
+app.post('/api/users', (req, res) => {
+  const { name } = (req.body || {}) as { name?: string };
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    res.status(400).json({ error: 'Missing user name' });
+    return;
+  }
+  const trimmed = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  if (!trimmed) {
+    res.status(400).json({ error: 'Invalid user name' });
+    return;
+  }
+  const user = addUser(trimmed);
+  if (!user) {
+    res.status(409).json({ error: `User "${trimmed}" already exists` });
+    return;
+  }
+  logger.info(`Created user: ${trimmed}`);
+  res.json({ ok: true, user });
+});
+
+app.post('/api/users/switch', (req, res) => {
+  const { name } = (req.body || {}) as { name?: string };
+  if (!name) {
+    res.status(400).json({ error: 'Missing user name' });
+    return;
+  }
+  setActiveUser(name);
+  res.setHeader('Set-Cookie', `active_user=${getActiveUserName()}; Max-Age=${365 * 24 * 60 * 60}; HttpOnly; Path=/`);
+  res.json({ ok: true, active: getActiveUserName(), id: getActiveUserId() });
+});
+
+// ----- routes: application tracking API ------------------------------------
+
+/**
+ * Mark a job as applied (or update application status).
+ * POST /api/jobs/:id/apply
+ * Body: { status?: string, notes?: string, resumeVersionId?: number }
+ */
+app.post('/api/jobs/:id/apply', (req, res) => {
+  const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
+  const db = getDb();
+
+  if (!Number.isInteger(jobId) || jobId < 1) {
+    res.status(400).json({ error: 'Invalid job ID' });
+    return;
+  }
+
+  const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(jobId);
+  if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
+
+  const { status, notes, resumeVersionId } = (req.body || {}) as {
+    status?: string; notes?: string; resumeVersionId?: number;
+  };
+  const newStatus = status || 'submitted';
+
+  // Upsert application
+  const existing = db.prepare(
+    'SELECT id FROM applications WHERE job_id = ? AND user_id = ?',
+  ).get(jobId, userId) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE applications SET status = ?, notes = ?, submitted_at = COALESCE(submitted_at, datetime('now')),
+       resume_version_id = COALESCE(?, resume_version_id),
+       updated_at = datetime('now') WHERE id = ?`,
+    ).run(newStatus, notes ?? null, resumeVersionId ?? null, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO applications (job_id, user_id, status, submitted_at, notes, resume_version_id, created_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), ?, ?, datetime('now'), datetime('now'))`,
+    ).run(jobId, userId, newStatus, notes ?? null, resumeVersionId ?? null);
+  }
+
+  // Update job status to 'applied' if submitting
+  if (newStatus === 'submitted') {
+    db.prepare("UPDATE jobs SET status = 'applied', updated_at = datetime('now') WHERE id = ?").run(jobId);
+  }
+
+  // Log event
+  db.prepare(
+    "INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'apply', ?, datetime('now'))",
+  ).run(jobId, `Application ${newStatus}${notes ? ': ' + notes : ''}`);
+
+  res.json({ ok: true, jobId, userId, status: newStatus });
+});
+
+/**
+ * Record a response to an application.
+ * POST /api/jobs/:id/response
+ * Body: { responseType: 'replied' | 'rejected' | 'interview' | 'offer' | 'accepted', notes?: string }
+ */
+app.post('/api/jobs/:id/response', (req, res) => {
+  const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
+  const db = getDb();
+
+  if (!Number.isInteger(jobId) || jobId < 1) {
+    res.status(400).json({ error: 'Invalid job ID' });
+    return;
+  }
+
+  const { responseType, notes } = (req.body || {}) as {
+    responseType?: string; notes?: string;
+  };
+
+  if (!responseType || !['replied', 'rejected', 'interview', 'offer', 'accepted'].includes(responseType)) {
+    res.status(400).json({ error: 'Valid responseType required: replied, rejected, interview, offer, accepted' });
+    return;
+  }
+
+  // Update application
+  const existing = db.prepare(
+    'SELECT id FROM applications WHERE job_id = ? AND user_id = ?',
+  ).get(jobId, userId) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE applications SET status = 'responded', response_type = ?, responded_at = datetime('now'),
+       notes = CASE WHEN ? IS NOT NULL THEN ? ELSE notes END,
+       updated_at = datetime('now') WHERE id = ?`,
+    ).run(responseType, notes ?? null, notes ?? null, existing.id);
+  } else {
+    // Create application record if not exists
+    db.prepare(
+      `INSERT INTO applications (job_id, user_id, status, response_type, responded_at, notes, created_at, updated_at)
+       VALUES (?, ?, 'responded', ?, datetime('now'), ?, datetime('now'), datetime('now'))`,
+    ).run(jobId, userId, responseType, notes ?? null);
+  }
+
+  // Log event
+  db.prepare(
+    "INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, ?, ?, datetime('now'))",
+  ).run(jobId, `response_${responseType}`, notes ?? null);
+
+  res.json({ ok: true, jobId, userId, responseType });
+});
+
+/**
+ * Get application status for a job (for the active user).
+ * GET /api/jobs/:id/application
+ */
+app.get('/api/jobs/:id/application', (req, res) => {
+  const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
+  const db = getDb();
+
+  const app = db.prepare(
+    'SELECT * FROM applications WHERE job_id = ? AND user_id = ?',
+  ).get(jobId, userId) as {
+    id: number; status: string; submitted_at: string | null;
+    responded_at: string | null; response_type: string | null;
+    notes: string | null; created_at: string;
+  } | undefined;
+
+  res.json({ application: app ?? null });
 });
 
 // ----- start ---------------------------------------------------------------

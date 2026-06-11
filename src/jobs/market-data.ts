@@ -14,8 +14,8 @@
  */
 
 import { getDb } from '../db/client.js';
-import { readFileSync, existsSync } from 'node:fs';
-import { CANDIDATE_PATH } from '../utils/paths.js';
+import { readCandidate } from '../utils/profile-store.js';
+import { getActiveUserId } from '../utils/user-context.js';
 import { logger } from '../utils/logger.js';
 import * as yaml from 'js-yaml';
 
@@ -104,9 +104,10 @@ const DEFAULT_SKILLS = [
 
 function getSkillList(): string[] {
   // Try to load skills from candidate profile
-  if (existsSync(CANDIDATE_PATH)) {
+  const yamlStr = readCandidate(getActiveUserId());
+  if (yamlStr) {
     try {
-      const profile = yaml.load(readFileSync(CANDIDATE_PATH, 'utf-8')) as Record<string, unknown> | undefined;
+      const profile = yaml.load(yamlStr) as Record<string, unknown> | undefined;
       const profileSkills = profile?.skills as Record<string, string[]> | undefined;
       if (profileSkills) {
         const all: string[] = [];

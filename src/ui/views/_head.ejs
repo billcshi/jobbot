@@ -365,12 +365,41 @@
 </head>
 <body>
   <nav>
-    <a href="/" class="logo">JobBot <span>v0.5</span></a>
+    <a href="/" class="logo">JobBot <span>v0.6</span></a>
     <a href="/">Dashboard</a>
     <a href="/add-urls">Add URLs</a>
     <a href="/pipeline">Pipeline</a>
     <a href="/events">Events</a>
     <a href="/profile">Profile</a>
     <a href="/ai-log">AI Log</a>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <span style="font-size:12px;color:var(--text-dim)">👤</span>
+      <select id="user-switcher" onchange="switchUser(this.value)"
+        style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer">
+        <% if (typeof allUsers !== 'undefined') { %>
+          <% for (const u of allUsers) { %>
+            <option value="<%= u.name %>" <%= (typeof activeUser !== 'undefined' && u.name === activeUser) ? 'selected' : '' %>><%= u.name %></option>
+          <% } %>
+        <% } %>
+      </select>
+      <button onclick="showAddUser()" title="Add user"
+        style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px 6px">+</button>
+    </div>
   </nav>
+  <!-- Add user dialog -->
+  <div id="add-user-dialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center">
+    <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:24px;max-width:360px;width:90%">
+      <h3 style="margin-bottom:12px;color:var(--text)">Add User</h3>
+      <input id="new-user-name" type="text" placeholder="username (letters, numbers, _ -)"
+        style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:14px;margin-bottom:12px"
+        onkeydown="if(event.key==='Enter')addUserSubmit()">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="document.getElementById('add-user-dialog').style.display='none'"
+          style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">Cancel</button>
+        <button onclick="addUserSubmit()"
+          style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Create</button>
+      </div>
+      <p id="add-user-error" style="color:var(--red);font-size:12px;margin-top:8px;display:none"></p>
+    </div>
+  </div>
   <div class="container">

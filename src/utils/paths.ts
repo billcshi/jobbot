@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,9 +11,6 @@ export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 /**
  * All personal data lives under `local/` — a directory that is gitignored
  * and NEVER committed to the public repository.
- *
- * The repo ships `local.example/` as a template. On first run, copy
- * `local.example/` → `local/` and fill in your real data there.
  */
 export const LOCAL_DIR = path.join(PROJECT_ROOT, 'local');
 
@@ -23,9 +21,12 @@ export const BROWSER_DIR = path.join(LOCAL_DIR, 'browser-data');
 
 export const DB_PATH = path.join(DATA_DIR, 'jobbot.sqlite');
 
-export const CANDIDATE_PATH = path.join(PROFILE_DIR, 'candidate.yaml');
-export const PREFERENCES_PATH = path.join(PROFILE_DIR, 'preferences.yaml');
-export const ANSWERS_PATH = path.join(PROFILE_DIR, 'answers.yaml');
+/** Per-job resume output directory: local/resumes/<jobId>/ */
+export function jobResumeDir(jobId: number): string {
+  const dir = path.join(RESUMES_DIR, String(jobId));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 /** Prompt templates shipped in the public repo. */
 export const PROMPTS_DIR = path.join(PROJECT_ROOT, 'prompts');

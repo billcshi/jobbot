@@ -1,9 +1,12 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
-import { PROJECT_ROOT, RESUMES_DIR, CANDIDATE_PATH } from '../utils/paths.js';
-import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
-import { readYamlFile } from '../utils/yaml.js';
+import { PROJECT_ROOT, jobResumeDir } from '../utils/paths.js';
+import { readCandidate } from '../utils/profile-store.js';
+import { getActiveUserId } from '../utils/user-context.js';
+import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
+import { parseLLMJson } from '../utils/parse-llm-json.js';
+import { parseYaml } from '../utils/yaml.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
@@ -52,7 +55,11 @@ function latexEscape(s: string): string {
 /**
  * Generate a cover letter via DeepSeek LLM and render to PDF.
  */
-export async function generateCoverLetter(jobId: number, tone: CoverLetterTone = 'professional'): Promise<CoverLetterResult> {
+/**
+ * @param version Optional compose version number. When provided, the full LLM
+ *   prompt is written to <jobResumeDir>/cover-letter-prompt-v<version>.txt for debugging.
+ */
+export async function generateCoverLetter(jobId: number, tone: CoverLetterTone = 'professional', version?: number): Promise<CoverLetterResult> {
   const db = getDb();
   const job = db.prepare(
     'SELECT id, title, company, location, description FROM jobs WHERE id = ?',
@@ -69,12 +76,12 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
 
   // Read candidate profile
   let candidate: CandidateProfile;
-  try { candidate = readYamlFile<CandidateProfile>(CANDIDATE_PATH); }
+  try { candidate = parseYaml<CandidateProfile>(readCandidate(getActiveUserId())); }
   catch { return { success: false, jobId, error: 'Candidate profile not found.' }; }
 
   // Check for tailored resume to include as context
   let tailoredYaml = '';
-  const tailoredPath = `${RESUMES_DIR}/${jobId}-tailored.yaml`;
+  const tailoredPath = `${jobResumeDir(jobId)}/tailored.yaml`;
   if (existsSync(tailoredPath)) {
     tailoredYaml = readFileSync(tailoredPath, 'utf-8');
   }
@@ -87,6 +94,8 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
   const toneInstruction = TONE_INSTRUCTIONS[tone] || TONE_INSTRUCTIONS.professional;
 
   const userMsg = [
+    `Today's date: ${new Date().toISOString().split('T')[0]}`,
+    '',
     `## Tone: ${tone}`,
     toneInstruction,
     '',
@@ -104,11 +113,26 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
     tailoredYaml ? `\n## Tailored Resume\n\`\`\`yaml\n${tailoredYaml}\n\`\`\`` : '',
     '',
     'Write a cover letter. Return ONLY valid JSON:',
-    '{"greeting": "Dear Hiring Manager,", "body": "Paragraphs here...", "closing": "Sincerely,\\\\n' + fullName + '"}',
+    '{"greeting": "Dear Hiring Manager,", "body": "Paragraphs here...", "closing": "Sincerely,"}',
   ].join('\n');
 
   const startMs = Date.now();
   let clData: { greeting: string; body: string; closing: string };
+
+  // Log prompt for debugging when version is provided
+  if (version !== undefined) {
+    const dir = jobResumeDir(jobId);
+    mkdirSync(dir, { recursive: true });
+    const promptDump = [
+      '=== SYSTEM PROMPT ===',
+      COVER_LETTER_PROMPT,
+      '',
+      '=== USER MESSAGE ===',
+      userMsg,
+    ].join('\n');
+    writeFileSync(`${dir}/cover-letter-prompt-v${version}.txt`, promptDump, 'utf-8');
+    console.log(`  📝 Wrote cover letter prompt: ${dir}/cover-letter-prompt-v${version}.txt`);
+  }
 
   try {
     const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -120,8 +144,8 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
           { role: 'system', content: COVER_LETTER_PROMPT },
           { role: 'user', content: userMsg },
         ],
-        response_format: { type: 'json_object' },
-        max_tokens: 2048,
+        max_tokens: 16384,
+        ...(getDeepseekThinking('cover-letter') ? { thinking: getDeepseekThinking('cover-letter') } : {}),
       }),
     });
 
@@ -133,7 +157,7 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
     const data = (await response.json()) as { choices: [{ message: { content: string } }]; usage?: Record<string, number> };
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response');
-    clData = JSON.parse(content);
+    clData = parseLLMJson(content, `cover-letter job #${jobId}`) as { greeting: string; body: string; closing: string };
     const usage = extractUsage(data as Record<string, unknown>);
 
     logAiCall({
@@ -164,20 +188,30 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
   tex = tex.replace(/\{\{phone\}\}/g, candidate.phone);
   tex = tex.replace(/\{\{date\}\}/g, today);
   tex = tex.replace(/\{\{greeting\}\}/g, latexEscape(clData.greeting));
-  tex = tex.replace(/\{\{body\}\}/g, latexEscape(clData.body));
-  tex = tex.replace(/\{\{closing\}\}/g, latexEscape(clData.closing));
+  // Convert paragraph breaks: the LLM may return literal \n\n or actual newlines.
+  // Handle these before LaTeX escaping to avoid \textbackslash{}n artifacts.
+  let body = clData.body
+    .replace(/\\n\s*\\n/g, '\x00PARA\x00')
+    .replace(/\n\s*\n/g, '\x00PARA\x00');
+  body = latexEscape(body);
+  body = body.replace(/\x00PARA\x00/g, '\\\\[\\baselineskip]');
+  tex = tex.replace(/\{\{body\}\}/g, body);
+  // Strip candidate name from closing — {{name}} renders it below the signature space
+  let closing = clData.closing;
+  closing = closing.replace(new RegExp('\\\\n?' + fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i'), '');
+  tex = tex.replace(/\{\{closing\}\}/g, latexEscape(closing));
   tex = tex.replace(/\{\{company\}\}/g, latexEscape(job.company || ''));
 
   // Handle conditionals
   tex = tex.replace(/\{\{#phone\}\}([\s\S]*?)\{\{\/phone\}\}/g, candidate.phone ? '$1' : '');
   tex = tex.replace(/\{\{#email\}\}([\s\S]*?)\{\{\/email\}\}/g, candidate.email ? '$1' : '');
   if (linkedinUsername) {
-    tex = tex.replace(/\{\{#linkedin\}\}([\s\S]*?)\{\{linkedin\}\}([\s\S]*?)\{\{\/linkedin\}\}/g, '$1' + linkedinUsername + '$2');
+    tex = tex.replace(/\{\{#linkedin\}\}([\s\S]*?)\{\{\/linkedin\}\}/g, (_m, inner) => inner.replace(/\{\{linkedin\}\}/g, linkedinUsername));
   } else {
     tex = tex.replace(/\{\{#linkedin\}\}[\s\S]*?\{\{\/linkedin\}\}/g, '');
   }
   if (githubUsername) {
-    tex = tex.replace(/\{\{#github\}\}([\s\S]*?)\{\{github\}\}([\s\S]*?)\{\{\/github\}\}/g, '$1' + githubUsername + '$2');
+    tex = tex.replace(/\{\{#github\}\}([\s\S]*?)\{\{\/github\}\}/g, (_m, inner) => inner.replace(/\{\{github\}\}/g, githubUsername));
   } else {
     tex = tex.replace(/\{\{#github\}\}[\s\S]*?\{\{\/github\}\}/g, '');
   }
@@ -187,15 +221,15 @@ export async function generateCoverLetter(jobId: number, tone: CoverLetterTone =
   tex = tex.replace(/\{\{[#/]?\w+\}\}/g, '');
 
   // Write and compile
-  mkdirSync(RESUMES_DIR, { recursive: true });
-  const texPath = `${RESUMES_DIR}/${jobId}-cover-letter.tex`;
+  const dir = jobResumeDir(jobId);
+  const texPath = `${dir}/cover-letter.tex`;
   writeFileSync(texPath, tex, 'utf-8');
 
   try {
-    execSync(`pdflatex -interaction=nonstopmode -output-directory="${RESUMES_DIR}" "${texPath}"`, { timeout: 30_000, stdio: 'pipe' });
-    execSync(`pdflatex -interaction=nonstopmode -output-directory="${RESUMES_DIR}" "${texPath}"`, { timeout: 30_000, stdio: 'pipe' });
+    execSync(`pdflatex -interaction=nonstopmode -output-directory="${dir}" "${texPath}"`, { timeout: 30_000, stdio: 'pipe' });
+    execSync(`pdflatex -interaction=nonstopmode -output-directory="${dir}" "${texPath}"`, { timeout: 30_000, stdio: 'pipe' });
 
-    const pdfPath = `${RESUMES_DIR}/${jobId}-cover-letter.pdf`;
+    const pdfPath = `${dir}/cover-letter.pdf`;
     if (!existsSync(pdfPath)) {
       return { success: false, jobId, error: 'pdflatex completed but no PDF produced.' };
     }

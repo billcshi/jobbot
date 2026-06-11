@@ -1,12 +1,26 @@
-import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
-import { PROJECT_ROOT, RESUMES_DIR } from '../utils/paths.js';
-import { getDeepseekKey, getAnthropicKey, getDeepseekModel } from '../utils/config.js';
+import { PROJECT_ROOT, jobResumeDir } from '../utils/paths.js';
+import { getDeepseekKey, getAnthropicKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
+import { parseLLMJson } from '../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
-const AUDIT_PROMPT = readFileSync(`${PROJECT_ROOT}/prompts/audit-resume.md`, 'utf-8');
+const AUDIT_ATS = readFileSync(`${PROJECT_ROOT}/prompts/audit-ats.md`, 'utf-8');
+const AUDIT_HM = readFileSync(`${PROJECT_ROOT}/prompts/audit-hm.md`, 'utf-8');
+const AUDIT_FORMAT = readFileSync(`${PROJECT_ROOT}/prompts/audit-format.md`, 'utf-8');
+
+/** Committee reviewers: each has a name, prompt, and weight in the combined score. */
+const COMMITTEE: { name: string; prompt: string; weight: number }[] = [
+  { name: 'ATS Screener', prompt: AUDIT_ATS, weight: 0.30 },
+  { name: 'Hiring Manager', prompt: AUDIT_HM, weight: 0.40 },
+  { name: 'Format Reviewer', prompt: AUDIT_FORMAT, weight: 0.30 },
+];
+
+/** Maximum compose→audit retry attempts before giving up. */
+const MAX_AUDIT_ATTEMPTS = 3;
 
 export interface AuditIssue {
   severity: 'high' | 'medium' | 'low';
@@ -55,8 +69,8 @@ function pdfToText(pdfPath: string): string {
  * Returns array of image file paths.
  */
 function pdfToImages(pdfPath: string): string[] {
-  const outputDir = `${RESUMES_DIR}/audit`;
-  mkdirSync(outputDir, { recursive: true });
+  // Images go in the same directory as the PDF
+  const outputDir = path.dirname(pdfPath);
 
   const baseName = pdfPath.split('/').pop()!.replace('.pdf', '');
   execSync(`pdftoppm -png -r 150 "${pdfPath}" "${outputDir}/${baseName}"`, {
@@ -80,20 +94,26 @@ function imageToBase64(imagePath: string): string {
   return `data:image/png;base64,${b64}`;
 }
 
-// ----- content audit (DeepSeek) ----------------------------------------------
+// ----- committee content audit (multiple reviewers in parallel) ----------------
 
-async function auditContent(
+async function runSingleReviewer(
+  name: string,
+  systemPrompt: string,
   resumeText: string,
   jobDescription: string,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
-  const requestBody = {
+  const thinking = getDeepseekThinking('audit-content');
+  const requestBody: Record<string, unknown> = {
     model: getDeepseekModel(),
     messages: [
-      { role: 'system', content: AUDIT_PROMPT },
+      { role: 'system', content: systemPrompt },
       {
         role: 'user',
         content: [
+          `Today's date: ${new Date().toISOString().split('T')[0]}`,
+          '',
           `## Job Description`,
           jobDescription.slice(0, 8000),
           '',
@@ -102,20 +122,18 @@ async function auditContent(
         ].join('\n'),
       },
     ],
-    response_format: { type: 'json_object' },
-    max_tokens: 4096,
+    max_tokens: 8192,
   };
+  if (thinking) requestBody['thinking'] = thinking;
 
   const startMs = Date.now();
 
   try {
     const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
+      signal,
     });
 
     if (!response.ok) {
@@ -130,7 +148,7 @@ async function auditContent(
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response from DeepSeek');
 
-    const parsed = JSON.parse(content);
+    const parsed = parseLLMJson(content, `audit-${name}`) as Record<string, any>;
     const usage = extractUsage(data as Record<string, unknown>);
     const issues = (parsed.issues || []).map((i: Record<string, unknown>) => ({
       severity: i.severity || 'medium',
@@ -141,11 +159,11 @@ async function auditContent(
     const score = typeof parsed.score === 'number' ? parsed.score : 70;
 
     logAiCall({
-      operation: 'audit-content',
+      operation: `audit-${name.toLowerCase().replace(/\s+/g, '-')}`,
       model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Content audit: ${resumeText.length} chars resume vs ${jobDescription.length} chars job desc`,
+      requestSummary: `${name}: ${resumeText.length} chars resume`,
       responseSummary: `Score ${score}/100, ${issues.length} issues`,
       ...usage,
       durationMs: Date.now() - startMs,
@@ -156,11 +174,11 @@ async function auditContent(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logAiCall({
-      operation: 'audit-content',
+      operation: `audit-${name.toLowerCase().replace(/\s+/g, '-')}`,
       model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: 'Content audit',
+      requestSummary: `${name} audit`,
       responseSummary: msg,
       durationMs: Date.now() - startMs,
       success: false,
@@ -170,11 +188,77 @@ async function auditContent(
   }
 }
 
+async function auditContentCommittee(
+  resumeText: string,
+  jobDescription: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
+  console.log(`  Committee: ${COMMITTEE.length} reviewers evaluating in parallel...`);
+
+  const settled = await Promise.allSettled(
+    COMMITTEE.map((reviewer) =>
+      runSingleReviewer(reviewer.name, reviewer.prompt, resumeText, jobDescription, apiKey, signal),
+    ),
+  );
+
+  // Combine results, skipping failed reviewers
+  let weightedScore = 0;
+  let totalWeight = 0;
+  const allIssues: AuditIssue[] = [];
+  const summaries: string[] = [];
+  const individualScores: string[] = [];
+
+  for (let i = 0; i < COMMITTEE.length; i++) {
+    const reviewer = COMMITTEE[i]!;
+    const result = settled[i]!;
+    if (result.status === 'rejected') {
+      console.log(`    ${reviewer.name}: FAILED`);
+      summaries.push(`${reviewer.name}: --`);
+      individualScores.push(`${reviewer.name}: --`);
+      continue;
+    }
+    const { issues, score } = result.value;
+    weightedScore += score * reviewer.weight;
+    totalWeight += reviewer.weight;
+    allIssues.push(...issues.map((issue) => ({
+      ...issue,
+      description: `[${reviewer.name}] ${issue.description}`,
+    })));
+    summaries.push(`${reviewer.name}: ${score}`);
+    individualScores.push(`${reviewer.name} ${score}`);
+    console.log(`    ${reviewer.name}: ${score}/100, ${issues.length} issue(s)`);
+  }
+
+  if (totalWeight === 0) {
+    throw new Error('All committee reviewers failed');
+  }
+
+  const combinedScore = Math.round(weightedScore / totalWeight);
+  const combinedSummary = individualScores.join(' | ') + ` → Overall ${combinedScore}/100`;
+  console.log(`  Committee: ${combinedSummary}`);
+
+  return { issues: allIssues, score: combinedScore, summary: combinedSummary };
+}
+
+// ----- content audit (single reviewer, kept for backward compat) ----------------
+
+async function auditContent(
+  resumeText: string,
+  jobDescription: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
+  // Delegate to committee for all content audits
+  return auditContentCommittee(resumeText, jobDescription, apiKey, signal);
+}
+
 // ----- visual audit (Claude Vision) ------------------------------------------
 
 async function auditVisual(
   imagePaths: string[],
   jobDescription: string,
+  signal?: AbortSignal,
 ): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
   // Try Anthropic API for vision, fall back to OpenAI-compatible
   const apiKey = getAnthropicKey();
@@ -216,7 +300,7 @@ async function auditVisual(
 
     const visualRequestBody = {
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: 'user', content }],
     };
 
@@ -231,6 +315,7 @@ async function auditVisual(
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify(visualRequestBody),
+        signal,
       });
 
       if (!response.ok) {
@@ -243,8 +328,7 @@ async function auditVisual(
         usage?: Record<string, number>;
       };
       const jsonText = data.content[0]?.text || '{}';
-      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : jsonText);
+      const parsed = parseLLMJson(jsonText, 'audit-visual') as Record<string, any>; // LLM output is inherently untyped
       const usage = extractUsage(data as Record<string, unknown>);
 
       const result = {
@@ -303,7 +387,7 @@ async function auditVisual(
  * 1. Content audit (DeepSeek) — reviews resume text against job description
  * 2. Visual audit (Claude Vision) — reviews the rendered PDF pages as images
  */
-export async function auditJob(jobId: number): Promise<AuditResult> {
+export async function auditJob(jobId: number, signal?: AbortSignal): Promise<AuditResult> {
   const db = getDb();
   const job = db.prepare(
     'SELECT id, title, company, description, status FROM jobs WHERE id = ?',
@@ -320,7 +404,7 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
     return { success: false, jobId, contentIssues: [], visualIssues: [], overallScore: 0, summary: '', error: `Job must be composed first (status is "${job.status}"). Run: pnpm jobbot compose --job ${jobId}` };
   }
 
-  const pdfPath = `${RESUMES_DIR}/${jobId}-resume.pdf`;
+  const pdfPath = `${jobResumeDir(jobId)}/resume.pdf`;
   if (!existsSync(pdfPath)) {
     return { success: false, jobId, contentIssues: [], visualIssues: [], overallScore: 0, summary: '', error: `PDF not found at ${pdfPath}. Run compose first.` };
   }
@@ -338,15 +422,29 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
   if (pages > 1) {
     console.log(`  ✕ FAILED: Resume is ${pages} pages — must be exactly 1 page.`);
 
+    // Read previous attempt count from existing feedback file
+    let previousAttempt = 0;
+    const feedbackPath = `${jobResumeDir(jobId)}/audit-feedback.json`;
+    if (existsSync(feedbackPath)) {
+      try {
+        const prev = JSON.parse(readFileSync(feedbackPath, 'utf-8'));
+        previousAttempt = prev.attempt || 0;
+      } catch { /* corrupt — start fresh */ }
+    }
+    const attempt = previousAttempt + 1;
+
     // Write feedback for compose to condense
     const feedback = {
       jobId,
+      attempt,
       score: 0,
       threshold: 70,
-      issues: [`Resume is ${pages} pages — must be exactly 1 page. Remove less relevant experience or condense bullet points.`],
-      message: `Resume is ${pages} pages (hard 1-page limit). Condense by removing the least relevant position or shortening bullet points.`,
+      issues: [
+        `Resume is ${pages} pages — hard 1-page limit. Fix in this priority order: (1) tighten EVERY bullet to exactly 1 line — cut filler words, (2) trim education coursework to 4 courses max, (3) shorten summary to 35 words, (4) if still >1 page, drop EITHER the project OR the internship — not both.`,
+      ],
+      message: `Resume is ${pages} pages (hard 1-page limit). First: make every bullet 1 line. Then: trim coursework. Then: shorter summary. Last resort: drop project OR internship.`,
     };
-    writeFileSync(`${RESUMES_DIR}/${jobId}-audit-feedback.json`, JSON.stringify(feedback, null, 2), 'utf-8');
+    writeFileSync(feedbackPath, JSON.stringify(feedback, null, 2), 'utf-8');
 
     db.prepare("UPDATE jobs SET status = 'scored', updated_at = datetime('now') WHERE id = ?").run(jobId);
     db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'audit_fail', ?, datetime('now'))")
@@ -368,7 +466,7 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
 
   try {
     const resumeText = pdfToText(pdfPath);
-    const result = await auditContent(resumeText, job.description || '', apiKey);
+    const result = await auditContent(resumeText, job.description || '', apiKey, signal);
     contentIssues = result.issues;
     contentScore = result.score;
     console.log(`  Score: ${contentScore}/100, ${contentIssues.length} issue(s)`);
@@ -389,7 +487,7 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
     const imagePaths = pdfToImages(pdfPath);
     if (imagePaths.length > 0) {
       console.log(`  Converted ${imagePaths.length} page(s) to images`);
-      const result = await auditVisual(imagePaths, job.description || '');
+      const result = await auditVisual(imagePaths, job.description || '', signal);
       visualIssues = result.issues;
       visualScore = result.score;
       console.log(`  Score: ${visualScore}/100, ${visualIssues.length} issue(s)`);
@@ -418,9 +516,8 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
     visualIssues,
   };
 
-  mkdirSync(`${RESUMES_DIR}/audit`, { recursive: true });
   writeFileSync(
-    `${RESUMES_DIR}/audit/${jobId}-audit.json`,
+    `${jobResumeDir(jobId)}/audit.json`,
     JSON.stringify(auditResult, null, 2),
     'utf-8',
   );
@@ -440,33 +537,52 @@ export async function auditJob(jobId: number): Promise<AuditResult> {
     ).run(jobId, `Audit passed: ${overallScore}/100`, JSON.stringify({ overallScore, contentScore, visualScore }));
     console.log(`\n✓ PASSED (${overallScore}/100 ≥ ${PASS_THRESHOLD}) — ready for apply.`);
   } else {
-    // Failed — write feedback and loop back to scored for re-compose
+    // Failed — write feedback. If under max attempts, loop back to scored
+    // for re-compose. If max reached, mark as terminal failure.
     const allIssues = [...contentIssues, ...visualIssues];
+
+    // Read previous attempt count from existing feedback file
+    let previousAttempt = 0;
+    const feedbackPath = `${jobResumeDir(jobId)}/audit-feedback.json`;
+    if (existsSync(feedbackPath)) {
+      try {
+        const prev = JSON.parse(readFileSync(feedbackPath, 'utf-8'));
+        previousAttempt = prev.attempt || 0;
+      } catch { /* corrupt — start fresh */ }
+    }
+    const attempt = previousAttempt + 1;
+
     const feedback = {
       jobId,
-      attempt: (auditResult as { attempt?: number }).attempt || 1,
+      attempt,
       score: overallScore,
       threshold: PASS_THRESHOLD,
       issues: allIssues.map((i) => `${i.severity}: ${i.description} → ${i.suggestion}`),
       message: `Resume scored ${overallScore}/100 (threshold: ${PASS_THRESHOLD}). Fix the issues above and re-compose.`,
     };
-    writeFileSync(
-      `${RESUMES_DIR}/${jobId}-audit-feedback.json`,
-      JSON.stringify(feedback, null, 2),
-      'utf-8',
-    );
+    writeFileSync(feedbackPath, JSON.stringify(feedback, null, 2), 'utf-8');
 
-    // Loop back to scored so compose picks it up again
-    db.prepare(
-      "UPDATE jobs SET status = 'scored', updated_at = datetime('now') WHERE id = ?",
-    ).run(jobId);
-    // Log event
-    db.prepare(
-      "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'audit_fail', ?, ?, datetime('now'))",
-    ).run(jobId, `Audit failed: ${overallScore}/100 < ${PASS_THRESHOLD}`, JSON.stringify({ overallScore, contentScore, visualScore }));
-    console.log(`\n✕ FAILED (${overallScore}/100 < ${PASS_THRESHOLD})`);
-    console.log(`  ${allIssues.length} issue(s) written to audit feedback.`);
-    console.log(`  Job looped back to 'scored' — re-run compose to fix.`);
+    if (attempt >= MAX_AUDIT_ATTEMPTS) {
+      // Terminal — give up, mark for manual review
+      db.prepare(
+        "UPDATE jobs SET status = 'audit_failed', updated_at = datetime('now') WHERE id = ?",
+      ).run(jobId);
+      db.prepare(
+        "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'audit_gave_up', ?, ?, datetime('now'))",
+      ).run(jobId, `Audit failed after ${attempt} attempts: ${overallScore}/100 < ${PASS_THRESHOLD}`, JSON.stringify({ overallScore, contentScore, visualScore, attempt }));
+      console.log(`\n✕ GAVE UP after ${attempt} attempts (${overallScore}/100 < ${PASS_THRESHOLD}) — manual review needed.`);
+    } else {
+      // Loop back to scored so compose picks it up again
+      db.prepare(
+        "UPDATE jobs SET status = 'scored', updated_at = datetime('now') WHERE id = ?",
+      ).run(jobId);
+      db.prepare(
+        "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'audit_fail', ?, ?, datetime('now'))",
+      ).run(jobId, `Audit failed (attempt ${attempt}/${MAX_AUDIT_ATTEMPTS}): ${overallScore}/100 < ${PASS_THRESHOLD}`, JSON.stringify({ overallScore, contentScore, visualScore, attempt }));
+      console.log(`\n✕ FAILED (attempt ${attempt}/${MAX_AUDIT_ATTEMPTS}, ${overallScore}/100 < ${PASS_THRESHOLD})`);
+      console.log(`  ${allIssues.length} issue(s) written to audit feedback.`);
+      console.log(`  Job looped back to 'scored' — re-run compose to fix.`);
+    }
   }
 
   const summary = [

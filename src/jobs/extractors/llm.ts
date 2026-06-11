@@ -1,7 +1,8 @@
 import * as cheerio from 'cheerio';
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR } from '../../utils/paths.js';
-import { getDeepseekKey, getDeepseekModel } from '../../utils/config.js';
+import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../../utils/config.js';
+import { parseLLMJson } from '../../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
 
@@ -45,7 +46,7 @@ export function htmlToText(html: string): string {
 /**
  * Extract structured job data using DeepSeek LLM.
  */
-export async function extractWithLLM(html: string, url: string): Promise<LlmExtractedJob> {
+export async function extractWithLLM(html: string, url: string, signal?: AbortSignal): Promise<LlmExtractedJob> {
   const text = htmlToText(html);
   const apiKey = getDeepseekKey();
 
@@ -58,15 +59,16 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
 
   logger.debug(`LLM extraction: ${truncated.length} chars from ${url}`);
 
-  const requestBody = {
+  const thinking = getDeepseekThinking('extract');
+  const requestBody: Record<string, unknown> = {
     model: getDeepseekModel(),
     messages: [
       { role: 'system', content: EXTRACT_PROMPT },
-      { role: 'user', content: `URL: ${url}\n\nPage text:\n${truncated}` },
+      { role: 'user', content: `Today's date: ${new Date().toISOString().split('T')[0]}\n\nURL: ${url}\n\nPage text:\n${truncated}` },
     ],
-    response_format: { type: 'json_object' },
-    max_tokens: 4096,
+    max_tokens: 16384,
   };
+  if (thinking) requestBody['thinking'] = thinking;
 
   const startMs = Date.now();
   let errorMsg: string | undefined;
@@ -79,22 +81,30 @@ export async function extractWithLLM(html: string, url: string): Promise<LlmExtr
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
+      signal,
     });
 
     if (!response.ok) {
       const body = await response.text();
       errorMsg = `HTTP ${response.status}: ${body.slice(0, 200)}`;
     } else {
-      const data = (await response.json()) as {
-        choices: [{ message: { content: string } }];
-        usage?: Record<string, number>;
-      };
-
-      const content = data.choices[0]?.message?.content;
-      if (!content) {
-        errorMsg = 'Empty response from DeepSeek';
-      } else {
-        const parsed = JSON.parse(content);
+      const responseText = await response.text();
+      let data: { choices: [{ message: { content: string; reasoning_content?: string } }]; usage?: Record<string, number> } | undefined;
+      let content: string | undefined;
+      try {
+        data = JSON.parse(responseText);
+        content = data!.choices?.[0]?.message?.content;
+        const reasoning = data!.choices?.[0]?.message?.reasoning_content;
+        if (!content && reasoning) {
+          errorMsg = `DeepSeek reasoning exceeded token limit (reasoning: ${reasoning.slice(0, 200)})`;
+        } else if (!content) {
+          errorMsg = `Empty response from DeepSeek (raw: ${responseText.slice(0, 300)})`;
+        }
+      } catch {
+        errorMsg = `DeepSeek returned non-JSON: ${responseText.slice(0, 300)}`;
+      }
+      if (content && data) {
+        const parsed = parseLLMJson(content, `extract ${url.slice(0, 80)}`) as Record<string, any>; // LLM output is inherently untyped
         const usage = extractUsage(data as Record<string, unknown>);
 
         logAiCall({

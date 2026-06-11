@@ -1,7 +1,10 @@
 import { getDb } from '../db/client.js';
 import { readFileSync } from 'node:fs';
-import { PROMPTS_DIR, CANDIDATE_PATH } from '../utils/paths.js';
-import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
+import { PROMPTS_DIR } from '../utils/paths.js';
+import { readCandidate } from '../utils/profile-store.js';
+import { getActiveUserId } from '../utils/user-context.js';
+import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
+import { parseLLMJson } from '../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
@@ -29,27 +32,38 @@ interface LlmTailorOutput {
     frameworks?: string[];
     infrastructure?: string[];
     databases?: string[];
+    data_processing?: string[];
   };
-  keyword_adjustments: {
+  keyword_adjustments?: {
     original: string;
     adjusted: string;
     reason: string;
   }[];
+  selected_projects?: {
+    name: string;
+    highlights: string[];
+    technologies: string[];
+  }[];
 }
 
 /**
- * Tailor a resume for a specific job using DeepSeek LLM.
+ * Customize a resume for a specific job using DeepSeek LLM.
  *
  * Reads the job description + candidate profile, sends to LLM,
- * and writes the tailored resume data to the resume_versions table.
+ * and writes the customized resume data to the resume_versions table.
  *
- * @param jobId Job to tailor for
+ * @param jobId Job to customize for
  * @param auditFeedback Optional JSON string from a previous audit failure.
- *   When provided, it's injected into the prompt so the LLM can fix specific issues.
+ *   When provided, it's injected at the TOP of the prompt so the LLM prioritizes fixes.
  * @param variant Optional resume variant name (e.g., "backend", "full-stack").
- *   When provided, the LLM tailors the resume with that focus.
+ *   When provided, the LLM customizes the resume with that focus.
+ * @param version Optional compose version number. When provided, the full LLM
+ *   prompt is written to <jobResumeDir>/tailor-prompt-v<version>.txt for debugging.
+ * @param previousOutput Optional YAML string of the previous tailored output.
+ *   When provided (retry), the LLM can see what it produced before and make
+ *   targeted edits instead of starting from scratch.
  */
-export async function tailorJob(jobId: number, auditFeedback?: string, variant?: string): Promise<TailorResult> {
+export async function tailorJob(jobId: number, auditFeedback?: string, variant?: string, signal?: AbortSignal, version?: number, previousOutput?: string): Promise<TailorResult> {
   const db = getDb();
   const job = db.prepare(
     'SELECT id, title, company, location, description FROM jobs WHERE id = ?',
@@ -74,7 +88,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   // Read candidate profile
   let candidateYaml: string;
   try {
-    candidateYaml = readFileSync(CANDIDATE_PATH, 'utf-8');
+    candidateYaml = readCandidate(getActiveUserId());
   } catch {
     return { success: false, jobId, error: 'Candidate profile not found. Run init-db first.' };
   }
@@ -89,9 +103,33 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     `${(job.description || '').slice(0, 10_000)}`,
   ].join('\n');
 
-  logger.info(`Tailoring resume for job #${jobId}: "${job.title}" at ${job.company}...`);
+  const isRetry = !!auditFeedback;
+  logger.info(`Customizing resume for job #${jobId}: "${job.title}" at ${job.company}${isRetry ? ' (retry with audit feedback)' : ''}...`);
 
+  // Build user message — audit feedback goes FIRST so the LLM prioritizes it
   const userMessage = [
+    `Today's date: ${new Date().toISOString().split('T')[0]}`,
+    '',
+    // Audit feedback at TOP — highest priority
+    auditFeedback ? [
+      '## ⚠️ PREVIOUS AUDIT FEEDBACK (ADDRESS EVERY ISSUE)',
+      'The previous version of this resume failed audit. You MUST fix these specific issues in your output:',
+      '```json',
+      auditFeedback,
+      '```',
+      'Fix every issue listed above. This is the highest priority. Stay truthful to the candidate profile.',
+      '',
+    ].join('\n') : '',
+    // Previous output so the LLM can see what it wrote and make targeted edits
+    previousOutput ? [
+      '## Your Previous Output (for reference)',
+      'This is what you produced last time. The audit found issues with it (see feedback above).',
+      'Make targeted edits — keep what worked, fix only what the audit flagged.',
+      '```yaml',
+      previousOutput,
+      '```',
+      '',
+    ].join('\n') : '',
     jobInfo,
     '',
     variant && variant !== 'general' ? [
@@ -103,29 +141,38 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     '```yaml',
     candidateYaml,
     '```',
-    auditFeedback ? [
-      '',
-      '## Previous Audit Feedback (FIX THESE ISSUES)',
-      'The previous resume was audited and failed. You MUST address these issues:',
-      '```json',
-      auditFeedback,
-      '```',
-      'Fix every issue listed above while staying truthful to the candidate profile.',
-    ].join('\n') : '',
   ].filter(Boolean).join('\n');
 
-  const requestBody = {
+  const thinking = getDeepseekThinking('customize');
+  const requestBody: Record<string, unknown> = {
     model: getDeepseekModel(),
     messages: [
       { role: 'system', content: TAILOR_PROMPT },
       { role: 'user', content: userMessage },
     ],
-    response_format: { type: 'json_object' },
-    max_tokens: 4096,
+    max_tokens: isRetry ? 32768 : 16384,  // more tokens for retries to allow thorough fixes
   };
+  if (thinking) requestBody['thinking'] = thinking;
 
   const startMs = Date.now();
   let llmOutput: LlmTailorOutput;
+
+  // Log prompt for debugging when version is provided
+  if (version !== undefined) {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { jobResumeDir } = await import('../utils/paths.js');
+    const dir = jobResumeDir(jobId);
+    mkdirSync(dir, { recursive: true });
+    const promptDump = [
+      '=== SYSTEM PROMPT ===',
+      TAILOR_PROMPT,
+      '',
+      '=== USER MESSAGE ===',
+      userMessage,
+    ].join('\n');
+    writeFileSync(`${dir}/tailor-prompt-v${version}.txt`, promptDump, 'utf-8');
+    console.log(`  📝 Wrote tailor prompt: ${dir}/tailor-prompt-v${version}.txt`);
+  }
 
   try {
     const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -135,6 +182,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
+      signal,
     });
 
     if (!response.ok) {
@@ -149,15 +197,15 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response from DeepSeek');
 
-    llmOutput = JSON.parse(content) as LlmTailorOutput;
+    llmOutput = parseLLMJson(content, `tailor job #${jobId}`) as LlmTailorOutput;
     const usage = extractUsage(data as Record<string, unknown>);
 
     logAiCall({
-      operation: 'tailor',
+      operation: 'customize',
       model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Tailor resume for job #${jobId} "${job.title}" at ${job.company}${auditFeedback ? ' (audit retry)' : ''}`,
+      requestSummary: `Customize resume for job #${jobId} "${job.title}" at ${job.company}${auditFeedback ? ' (audit retry)' : ''}`,
       responseSummary: `${llmOutput.selected_experience.length} positions, summary ${llmOutput.summary.length} chars`,
       ...usage,
       durationMs: Date.now() - startMs,
@@ -167,11 +215,11 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Tailor LLM failed for job ${jobId}: ${msg}`);
     logAiCall({
-      operation: 'tailor',
+      operation: 'customize',
       model: getDeepseekModel(),
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Tailor resume for job #${jobId}`,
+      requestSummary: `Customize resume for job #${jobId}`,
       responseSummary: msg,
       durationMs: Date.now() - startMs,
       success: false,
@@ -191,8 +239,8 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   const yamlData = yaml.dump(llmOutput);
 
   // Store in resume_versions + tailored YAML
-  const { RESUMES_DIR } = await import('../utils/paths.js');
-  const texPath = `${RESUMES_DIR}/${jobId}-resume.tex`;
+  const { jobResumeDir } = await import('../utils/paths.js');
+  const texPath = `${jobResumeDir(jobId)}/resume.tex`;
   db.prepare(
     `INSERT OR REPLACE INTO resume_versions (job_id, version_name, tex_path, created_at)
      VALUES (?, ?, ?, datetime('now'))`,
@@ -206,8 +254,8 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
 
   // Store the tailored YAML in local/resumes/
   const { mkdirSync, writeFileSync } = await import('node:fs');
-  mkdirSync(RESUMES_DIR, { recursive: true });
-  writeFileSync(`${RESUMES_DIR}/${jobId}-tailored.yaml`, yamlData, 'utf-8');
+  mkdirSync(jobResumeDir(jobId), { recursive: true });
+  writeFileSync(`${jobResumeDir(jobId)}/tailored.yaml`, yamlData, 'utf-8');
 
   // Note: status change to 'composed' is handled by compose.ts.
   // When tailor is called standalone, we leave status as-is.

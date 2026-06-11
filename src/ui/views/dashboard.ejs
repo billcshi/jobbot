@@ -98,6 +98,15 @@
       <option value="new" <%= filters.status === 'new' ? 'selected' : '' %>>New</option>
       <option value="extracted" <%= filters.status === 'extracted' ? 'selected' : '' %>>Extracted</option>
       <option value="scored" <%= filters.status === 'scored' ? 'selected' : '' %>>Scored</option>
+      <option value="composed" <%= filters.status === 'composed' ? 'selected' : '' %>>Composed</option>
+      <option value="audited" <%= filters.status === 'audited' ? 'selected' : '' %>>Audited</option>
+    </select>
+  </label>
+  <label>Applied:
+    <select onchange="filter('applied', this.value)">
+      <option value="hide" <%= filters.applied === 'hide' ? 'selected' : '' %>>Hide applied</option>
+      <option value="all" <%= filters.applied === 'all' ? 'selected' : '' %>>Show all</option>
+      <option value="only" <%= filters.applied === 'only' ? 'selected' : '' %>>Applied only</option>
     </select>
   </label>
   <label>Sort:
@@ -133,10 +142,12 @@
     </thead>
     <tbody>
       <% for (const job of jobs) { %>
+        <% const displayScore = job.user_score != null ? job.user_score : job.score; %>
+        <% const displayTier = job.user_tier || job.tier; %>
         <tr class="clickable" onclick="location.href='/jobs/<%= job.id %>'">
           <td><%= job.id %></td>
-          <td><span class="badge <%= helpers.tierClass(job.tier) %>"><%= helpers.tierLabel(job.tier) %></span></td>
-          <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(job.score) %></td>
+          <td><span class="badge <%= helpers.tierClass(displayTier) %>"><%= helpers.tierLabel(displayTier) %></span></td>
+          <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(displayScore) %></td>
           <td><%= helpers.truncate(job.company, 25) %></td>
           <td style="max-width:250px"><%= helpers.truncate(job.title, 40) %></td>
           <td><%= job.ats_type %></td>

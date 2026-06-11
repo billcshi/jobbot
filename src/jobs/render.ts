@@ -1,8 +1,10 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
-import { PROJECT_ROOT, RESUMES_DIR, CANDIDATE_PATH } from '../utils/paths.js';
-import { readYamlFile } from '../utils/yaml.js';
+import { PROJECT_ROOT, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
+import { readCandidate } from '../utils/profile-store.js';
+import { getActiveUserId } from '../utils/user-context.js';
+import { readYamlFile, parseYaml } from '../utils/yaml.js';
 import { logger } from '../utils/logger.js';
 
 const LATEX_TEMPLATE_PATH = `${PROJECT_ROOT}/resumes/master.tex`;
@@ -83,11 +85,17 @@ interface TailoredData {
     frameworks?: string[];
     infrastructure?: string[];
     databases?: string[];
+    data_processing?: string[];
   };
   keyword_adjustments?: {
     original: string;
     adjusted: string;
     reason: string;
+  }[];
+  selected_projects?: {
+    name: string;
+    highlights: string[];
+    technologies: string[];
   }[];
 }
 
@@ -112,7 +120,7 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
   }
 
   // Check if tailored data exists
-  const tailoredYamlPath = `${RESUMES_DIR}/${jobId}-tailored.yaml`;
+  const tailoredYamlPath = `${jobResumeDir(jobId)}/tailored.yaml`;
   if (!existsSync(tailoredYamlPath)) {
     return {
       success: false,
@@ -132,7 +140,7 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
   // Read candidate profile
   let candidate: CandidateProfile;
   try {
-    candidate = readYamlFile<CandidateProfile>(CANDIDATE_PATH);
+    candidate = parseYaml<CandidateProfile>(readCandidate(getActiveUserId()));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, jobId, error: `Failed to read candidate profile: ${msg}` };
@@ -220,11 +228,19 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
       item = item.replace(/\{\{date_range\}\}/g, latexEscape(formatDateRange(edu.start, edu.end)));
       item = item.replace(/\{\{location\}\}/g, latexEscape(edu.location || ''));
 
-      // Handle notes conditional
+      // Handle notes conditional — truncate long coursework lists
       const notesMatch = item.match(/\{\{#notes\}\}([\s\S]*?)\{\{\/notes\}\}/);
       if (notesMatch) {
         if (edu.notes) {
-          item = item.replace(notesMatch[0], notesMatch[1]!.replace(/\{\{notes\}\}/g, latexEscape(edu.notes!)));
+          let notesText = edu.notes;
+          // Truncate verbose coursework: keep only the first ~8 items for experienced candidates
+          if (notesText.length > 200 && notesText.includes(',')) {
+            const items = notesText.split(',');
+            if (items.length > 8) {
+              notesText = items.slice(0, 6).join(',') + ', ...';
+            }
+          }
+          item = item.replace(notesMatch[0], notesMatch[1]!.replace(/\{\{notes\}\}/g, latexEscape(notesText)));
         } else {
           item = item.replace(notesMatch[0], '');
         }
@@ -256,6 +272,9 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
     if (skills.databases && skills.databases.length > 0) {
       skillsList.push({ category: 'Databases', skills_list: skills.databases.join(', ') });
     }
+    if (skills.data_processing && skills.data_processing.length > 0) {
+      skillsList.push({ category: 'Data Processing', skills_list: skills.data_processing.join(', ') });
+    }
 
     if (skillsList.length > 0) {
       const skillsContent = skillsList.map((s) => {
@@ -272,24 +291,38 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
   }
 
   // ---- Build projects section (optional) ----
-  const projSectionMatch = tex.match(/\{\{#projects\}\}([\s\S]*?)\{\{\/projects\}\}/);
+  const projSectionMatch = tex.match(/\{\{#has_projects\}\}([\s\S]*?)\{\{\/has_projects\}\}/);
   if (projSectionMatch) {
-    if (candidate.projects && candidate.projects.length > 0) {
-      const itemTemplate = projSectionMatch[1]!;
-      const projContent = candidate.projects.map((proj) => {
-        let item = itemTemplate;
-        item = item.replace(/\{\{name\}\}/g, latexEscape(proj.name));
-        item = item.replace(/\{\{technologies\}\}/g, latexEscape(proj.technologies.join(', ')));
-        const hlMatch = item.match(/\{\{#highlights\}\}([\s\S]*?)\{\{\/highlights\}\}/);
-        if (hlMatch) {
-          const hlTemplate = hlMatch[1]!;
-          const hlContent = proj.highlights.map((h) => hlTemplate.replace(/\{\{\.\}\}/g, latexEscape(h))).join('\n');
-          item = item.replace(hlMatch[0], hlContent);
-        }
-        item = item.replace(/\{\{[#/]?\w+\}\}/g, '');
-        return item;
-      }).join('\n');
-      tex = tex.replace(projSectionMatch[0], projContent);
+    // Respect LLM's show_projects flag — default to true for backward compat
+    const projects = candidate.projects;
+    // Use LLM-selected projects with customized highlights, fall back to first profile project
+    const displayProjects = (tailored.selected_projects && tailored.selected_projects.length > 0)
+      ? tailored.selected_projects.slice(0, 1)
+      : (projects || []).slice(0, 1);
+    if (displayProjects.length > 0) {
+      const sectionTemplate = projSectionMatch[1]!;
+      // Now iterate each project against the inner {{#projects}}...{{/projects}} block
+      const projItemMatch = sectionTemplate.match(/\{\{#projects\}\}([\s\S]*?)\{\{\/projects\}\}/);
+      let sectionContent = sectionTemplate;
+      if (projItemMatch) {
+        const itemTemplate = projItemMatch[1]!;
+        const projContent = displayProjects.map((proj) => {
+          let item = itemTemplate;
+          item = item.replace(/\{\{project_name\}\}/g, latexEscape(proj.name));
+          item = item.replace(/\{\{technologies\}\}/g, latexEscape(proj.technologies.join(', ')));
+          const hlMatch = item.match(/\{\{#highlights\}\}([\s\S]*?)\{\{\/highlights\}\}/);
+          if (hlMatch && proj.highlights.length > 0) {
+            const hlTemplate = hlMatch[1]!;
+            const hlContent = proj.highlights.slice(0, 2).map((h) => hlTemplate.replace(/\{\{\.\}\}/g, latexEscape(h))).join('\n');
+            item = item.replace(hlMatch[0], hlContent);
+          }
+          item = item.replace(/\{\{[#/]?\w+\}\}/g, '');
+          return item;
+        }).join('\n');
+        sectionContent = sectionContent.replace(projItemMatch[0], projContent);
+      }
+      sectionContent = sectionContent.replace(/\{\{[#/]?\w+\}\}/g, '');
+      tex = tex.replace(projSectionMatch[0], sectionContent);
     } else {
       tex = tex.replace(projSectionMatch[0], '');
     }
@@ -352,14 +385,14 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
 
   // ---- Write .tex file ----
   mkdirSync(RESUMES_DIR, { recursive: true });
-  const texPath = `${RESUMES_DIR}/${jobId}-resume.tex`;
+  const texPath = `${jobResumeDir(jobId)}/resume.tex`;
   writeFileSync(texPath, tex, 'utf-8');
   logger.info(`Wrote LaTeX: ${texPath}`);
 
   // ---- Compile with pdflatex ----
   try {
     // Run pdflatex twice for proper layout (TOC, cross-refs etc.)
-    const outputDir = RESUMES_DIR;
+    const outputDir = jobResumeDir(jobId);
     execSync(`pdflatex -interaction=nonstopmode -output-directory="${outputDir}" "${texPath}"`, {
       timeout: 30_000,
       stdio: 'pipe',
@@ -369,7 +402,7 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
       stdio: 'pipe',
     });
 
-    const pdfPath = `${RESUMES_DIR}/${jobId}-resume.pdf`;
+    const pdfPath = `${jobResumeDir(jobId)}/resume.pdf`;
     if (!existsSync(pdfPath)) {
       return { success: false, jobId, texPath, error: 'pdflatex completed but PDF was not produced. Check LaTeX log for errors.' };
     }

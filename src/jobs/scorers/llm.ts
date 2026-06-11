@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR } from '../../utils/paths.js';
-import { CANDIDATE_PATH, PREFERENCES_PATH } from '../../utils/paths.js';
-import { getDeepseekKey, getDeepseekModel } from '../../utils/config.js';
+import { readCandidate, readPreferences } from '../../utils/profile-store.js';
+import { getDeepseekKey, getDeepseekThinking } from '../../utils/config.js';
+import { parseLLMJson } from '../../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
+import { getActiveUserId } from '../../utils/user-context.js';
 import type { ScoreResult } from '../score.js';
 
 const SCORE_PROMPT = readFileSync(`${PROMPTS_DIR}/score-job.md`, 'utf-8');
@@ -25,6 +27,7 @@ interface JobForScoring {
 export async function scoreJobWithLLM(
   job: JobForScoring,
   instruction?: string,
+  signal?: AbortSignal,
 ): Promise<ScoreResult> {
   const apiKey = getDeepseekKey();
   if (!apiKey) {
@@ -42,27 +45,31 @@ export async function scoreJobWithLLM(
     `${(job.description || '').slice(0, 10_000)}`,
   ].join('\n');
 
+  const userId = getActiveUserId();
   const candidateInfo = [
     `## Candidate Profile`,
     '```yaml',
-    readFileSync(CANDIDATE_PATH, 'utf-8'),
+    readCandidate(userId),
     '```',
   ].join('\n');
 
   const prefsInfo = [
     `## Scoring Preferences`,
     '```yaml',
-    readFileSync(PREFERENCES_PATH, 'utf-8'),
+    readPreferences(userId),
     '```',
   ].join('\n');
 
   logger.debug(`Scoring job ${job.id} via LLM...`);
 
-  const requestBody = {
-    model: getDeepseekModel(),
+  const thinking = getDeepseekThinking('score');
+  const requestBody: Record<string, unknown> = {
+    model: 'deepseek-v4-flash',  // flash: no reasoning, faster, ideal for scoring
     messages: [
       { role: 'system', content: SCORE_PROMPT },
       { role: 'user', content: [
+        `Today's date: ${new Date().toISOString().split('T')[0]}`,
+        '',
         candidateInfo,
         '',
         prefsInfo,
@@ -71,9 +78,9 @@ export async function scoreJobWithLLM(
         instruction ? `\n## Additional Instruction\n${instruction}` : '',
       ].filter(Boolean).join('\n') },
     ],
-    response_format: { type: 'json_object' },
-    max_tokens: 2048,
+    max_tokens: 8192,
   };
+  if (thinking) requestBody['thinking'] = thinking;
 
   const startMs = Date.now();
 
@@ -85,6 +92,7 @@ export async function scoreJobWithLLM(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
+      signal,
     });
 
     if (!response.ok) {
@@ -92,7 +100,7 @@ export async function scoreJobWithLLM(
       const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
       logAiCall({
         operation: 'score',
-        model: getDeepseekModel(),
+        model: 'deepseek-v4-flash',  // flash: no reasoning, faster, ideal for scoring
         provider: 'deepseek',
         endpoint: 'https://api.deepseek.com/v1/chat/completions',
         requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
@@ -104,14 +112,24 @@ export async function scoreJobWithLLM(
       throw new Error(errMsg);
     }
 
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
-    const content = data.choices[0]?.message?.content;
-    if (!content) throw new Error('Empty response from DeepSeek');
+    const responseText = await response.text();
+    let data: { choices: [{ message: { content: string; reasoning_content?: string } }]; usage?: Record<string, number> };
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      throw new Error(`DeepSeek returned non-JSON: ${responseText.slice(0, 300)}`);
+    }
+    const content = data.choices?.[0]?.message?.content;
+    // v4-pro may return empty content with reasoning_content (max_tokens hit mid-reasoning)
+    const reasoning = data.choices?.[0]?.message?.reasoning_content;
+    if (!content && reasoning) {
+      throw new Error(`DeepSeek reasoning exceeded token limit (reasoning: ${reasoning.slice(0, 200)}). Increase max_tokens.`);
+    }
+    if (!content) {
+      throw new Error(`Empty response from DeepSeek (raw: ${responseText.slice(0, 300)})`);
+    }
 
-    const parsed = JSON.parse(content);
+    const parsed = parseLLMJson(content, `score job #${job.id}`) as Record<string, any>; // LLM output is inherently untyped
     const usage = extractUsage(data as Record<string, unknown>);
     const result = {
       score: typeof parsed.score === 'number' ? parsed.score : 0,
@@ -121,7 +139,7 @@ export async function scoreJobWithLLM(
 
     logAiCall({
       operation: 'score',
-      model: getDeepseekModel(),
+      model: 'deepseek-v4-flash',  // flash: no reasoning, faster, ideal for scoring
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
@@ -136,7 +154,7 @@ export async function scoreJobWithLLM(
     const msg = err instanceof Error ? err.message : String(err);
     logAiCall({
       operation: 'score',
-      model: getDeepseekModel(),
+      model: 'deepseek-v4-flash',  // flash: no reasoning, faster, ideal for scoring
       provider: 'deepseek',
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,

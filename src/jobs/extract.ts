@@ -18,7 +18,7 @@ export interface ExtractResult {
  * Fetch and extract job details using LLM (DeepSeek).
  * Works on any ATS — no per-platform parsers needed.
  */
-export async function extractJob(jobId: number): Promise<ExtractResult> {
+export async function extractJob(jobId: number, signal?: AbortSignal): Promise<ExtractResult> {
   const db = getDb();
   const job = db.prepare('SELECT id, url, ats_type FROM jobs WHERE id = ?').get(jobId) as
     | { id: number; url: string; ats_type: string }
@@ -34,6 +34,7 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
   try {
     const res = await fetch(job.url, {
       headers: { 'User-Agent': 'JobBot/0.2 (personal job-search assistant)' },
+      signal,
     });
     if (!res.ok) {
       const errMsg = `HTTP ${res.status}`;
@@ -59,7 +60,7 @@ export async function extractJob(jobId: number): Promise<ExtractResult> {
 
   // LLM extraction
   try {
-    const extracted = await extractWithLLM(html, job.url);
+    const extracted = await extractWithLLM(html, job.url, signal);
 
     db.prepare(
       `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, status = 'extracted', updated_at = datetime('now') WHERE id = ?`,

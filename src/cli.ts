@@ -21,6 +21,7 @@ import { printMarketData } from './jobs/market-data.js';
 import { startUi } from './ui/server.js';
 import { runOnce, startSchedule } from './jobs/schedule.js';
 import { logger } from './utils/logger.js';
+import { setActiveUser, getActiveUserName, getActiveUserId, listUsers, addUser } from './utils/user-context.js';
 
 function usage(): never {
   console.log(`JobBot — personal job-search assistant
@@ -30,17 +31,20 @@ Usage:
   pnpm jobbot add-url <url> [url2 ...]
   pnpm jobbot discover --query <terms> [--location <city>] [--source <board>] [--ingest] [--company <name>]
   pnpm jobbot extract [--job <id>]
-  pnpm jobbot score
-  pnpm jobbot list [--tier <tier>]
+  pnpm jobbot score [--user <name>]
+  pnpm jobbot list [--tier <tier>] [--user <name>]
   pnpm jobbot delete --job <id> [--force]
   pnpm jobbot delete --tier <tier> [--force]
   pnpm jobbot delete --status <status> [--force]
-  pnpm jobbot run [--step extract|score|compose|audit] [--job <id>]
-  pnpm jobbot tailor --job <id>
+  pnpm jobbot run [--step extract|score|compose|audit] [--job <id>] [--user <name>]
+  pnpm jobbot customize --job <id> [--user <name>]
   pnpm jobbot render --job <id>
-  pnpm jobbot compose --job <id>
+  pnpm jobbot compose --job <id> [--user <name>]
   pnpm jobbot audit --job <id>
   pnpm jobbot ui
+  pnpm jobbot user-list
+  pnpm jobbot user-add <name>
+  pnpm jobbot user-switch <name>
 `);
   process.exit(1);
 }
@@ -85,6 +89,11 @@ async function main(): Promise<void> {
   if (!parsed) usage();
 
   const { command, flags, positional } = parsed;
+
+  // Apply --user flag if present
+  if (flags['user']) {
+    setActiveUser(flags['user']);
+  }
 
   switch (command) {
     case 'init-db': {
@@ -393,6 +402,47 @@ async function main(): Promise<void> {
     case 'ui': {
       startUi();
       console.log('Press Ctrl+C to stop.');
+      break;
+    }
+
+    case 'user-list': {
+      const users = listUsers();
+      if (users.length === 0) {
+        console.log('No users found. Run init-db to create the default user.');
+      } else {
+        console.log(`${'ID'.padEnd(4)} │ ${'NAME'.padEnd(20)} │ ${'ACTIVE'.padEnd(6)} │ CREATED`);
+        console.log('─'.repeat(60));
+        for (const u of users) {
+          console.log(`${String(u.id).padEnd(4)} │ ${u.name.padEnd(20)} │ ${String(u.active ? '✓' : '-').padEnd(6)} │ ${u.created_at}`);
+        }
+        console.log(`\nActive: ${getActiveUserName()}`);
+      }
+      break;
+    }
+
+    case 'user-add': {
+      const name = positional[0];
+      if (!name) {
+        logger.error('user-add requires a name argument');
+        process.exit(1);
+      }
+      const user = addUser(name);
+      if (user) {
+        console.log(`Created user: ${user.name} (id=${user.id})`);
+      } else {
+        console.log(`User "${name}" already exists.`);
+      }
+      break;
+    }
+
+    case 'user-switch': {
+      const name = positional[0];
+      if (!name) {
+        logger.error('user-switch requires a name argument');
+        process.exit(1);
+      }
+      setActiveUser(name);
+      console.log(`Switched to user: ${getActiveUserName()} (id=${getActiveUserId()})`);
       break;
     }
 

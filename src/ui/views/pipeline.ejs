@@ -154,6 +154,86 @@
   }
   .btn-run:hover { filter: brightness(1.15); }
   .btn-run:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
+  .btn-cancel {
+    background: var(--red);
+    color: #fff;
+    border: none;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    margin-left: 8px;
+    transition: all 0.15s;
+  }
+  .btn-cancel:hover { filter: brightness(1.15); }
+
+  /* live pipeline status panel */
+  .live-panel {
+    display: none; margin-bottom: 24px; padding: 20px 24px;
+    background: rgba(88,166,255,0.06); border: 1px solid var(--accent);
+    border-radius: 8px;
+  }
+  .live-panel.open { display: block; }
+  .live-panel h3 {
+    font-size: 14px; font-weight: 600; color: var(--accent);
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  .live-panel h3 .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .live-stages { display: flex; gap: 8px; flex-wrap: wrap; }
+  .live-stage {
+    flex: 1; min-width: 160px; padding: 10px 14px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px;
+  }
+  .live-stage.active { border-color: var(--accent); background: rgba(88,166,255,0.05); }
+  .live-stage.done { border-color: var(--green); opacity: 0.7; }
+  .live-stage .ls-name { font-weight: 600; margin-bottom: 4px; }
+  .live-stage .ls-bar {
+    height: 4px; background: var(--border); border-radius: 2px;
+    margin: 6px 0; overflow: hidden;
+  }
+  .live-stage .ls-bar-fill {
+    height: 100%; background: var(--accent); border-radius: 2px;
+    transition: width 0.3s;
+  }
+  .live-stage.done .ls-bar-fill { background: var(--green); }
+  .live-stage .ls-stats { color: var(--text-dim); font-size: 11px; }
+  .live-stage .ls-running {
+    color: var(--accent); font-size: 10px; margin-top: 4px;
+    max-height: 60px; overflow-y: auto;
+  }
+
+  /* task pool table */
+  .task-pool { margin-top: 18px; }
+  .task-pool h4 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .task-pool table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .task-pool th { text-align: left; font-weight: 600; color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .task-pool td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+  .task-pool .task-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 500;
+  }
+  .task-pool .task-status.running { color: var(--accent); }
+  .task-pool .task-status.done { color: var(--green); }
+  .task-pool .task-status.fail { color: var(--red); }
+  .task-pool .task-status.cancelled { color: var(--yellow); }
+  .task-pool .task-spinner {
+    display: inline-block; width: 10px; height: 10px;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  .btn-task-cancel {
+    background: none; border: 1px solid var(--red); color: var(--red);
+    padding: 2px 8px; border-radius: 4px; cursor: pointer;
+    font-size: 10px; font-weight: 600; transition: all 0.15s;
+  }
+  .btn-task-cancel:hover { background: var(--red); color: #fff; }
 </style>
 
 <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -163,6 +243,7 @@
   </div>
   <div style="text-align:right;flex-shrink:0">
     <button id="run-btn" class="btn-run" onclick="startPipeline()" title="Run the full pipeline (extract → score → compose → audit)">▶ Run Pipeline</button>
+    <button id="cancel-btn" class="btn-cancel" style="display:none" onclick="cancelPipeline()" title="Cancel the running pipeline">✕ Cancel</button>
     <div id="run-progress" style="display:none;margin-top:8px;font-size:12px;color:var(--text-muted)">
       <span id="run-stage"></span>
       <span id="run-spinner" style="display:none"> ⏳</span>
@@ -174,6 +255,28 @@
       <option value="compose">Compose only</option>
       <option value="audit">Audit only</option>
     </select>
+  </div>
+</div>
+
+<!-- Live pipeline status panel -->
+<div class="live-panel" id="live-panel">
+  <h3><span class="spinner"></span> Pipeline Running — <span id="live-elapsed"></span></h3>
+  <div class="live-stages" id="live-stages"></div>
+  <div class="task-pool" id="task-pool" style="display:none">
+    <h4>Task Pool</h4>
+    <table>
+      <thead>
+        <tr>
+          <th>Job</th>
+          <th>Stage</th>
+          <th>Title / Company</th>
+          <th>Status</th>
+          <th>Elapsed</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="task-pool-body"></tbody>
+    </table>
   </div>
 </div>
 
@@ -409,6 +512,10 @@
 </div>
 
 <script>
+  const STAGE_NAMES = { extract: 'Extract', score: 'Score', compose: 'Compose', audit: 'Audit' };
+  let pollTimer = null;
+  let pipelineStart = null;
+
   function toggleQueue(id) {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('open');
@@ -448,42 +555,230 @@
     }
   }
 
-  let pollTimer = null;
-
   async function startPipeline() {
+    // Check if already running
+    const statusResp = await fetch('/api/pipeline/status');
+    const statusData = await statusResp.json();
+    if (statusData.running) {
+      showLivePanel(statusData);
+      pollProgress();
+      return;
+    }
+
     const step = document.getElementById('run-step').value;
     const body = step ? { step } : {};
     const resp = await fetch('/api/run', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const data = await resp.json();
     if (!data.ok && resp.status === 409) {
       alert('Pipeline is already running.');
+      pollProgress();
       return;
     }
     if (!data.ok) {
       alert('Failed to start: ' + (data.error || 'unknown'));
       return;
     }
+    pipelineStart = Date.now();
     document.getElementById('run-btn').disabled = true;
+    document.getElementById('cancel-btn').style.display = 'inline-block';
     document.getElementById('run-progress').style.display = 'block';
     document.getElementById('run-spinner').style.display = 'inline';
     document.getElementById('run-stage').textContent = 'Starting...';
     pollProgress();
   }
 
-  async function pollProgress() {
-    const resp = await fetch('/api/run/status');
-    const s = await resp.json();
-    document.getElementById('run-stage').textContent = s.message || s.stage;
-    if (s.running) {
-      document.getElementById('run-spinner').style.display = 'inline';
-      pollTimer = setTimeout(pollProgress, 2000);
-    } else {
-      document.getElementById('run-spinner').style.display = 'none';
-      document.getElementById('run-btn').disabled = false;
-      document.getElementById('run-stage').textContent = s.message || 'Complete';
-      setTimeout(() => window.location.reload(), 1500);
+  async function cancelPipeline() {
+    if (!confirm('Cancel the running pipeline? Already-running tasks will finish but no new tasks will start.')) return;
+    const resp = await fetch('/api/pipeline/cancel', { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      document.getElementById('run-stage').textContent = 'Cancelling...';
+      document.getElementById('cancel-btn').disabled = true;
+      document.getElementById('cancel-btn').textContent = 'Cancelling...';
     }
   }
+
+  function fmtElapsed(sec) {
+    if (sec < 60) return sec + 's';
+    return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+  }
+
+  function showLivePanel(snap) {
+    const panel = document.getElementById('live-panel');
+    if (!snap.running) {
+      panel.classList.remove('open');
+      return;
+    }
+    panel.classList.add('open');
+
+    // Elapsed time
+    if (snap.startedAt) {
+      const elapsed = Math.floor((Date.now() - new Date(snap.startedAt).getTime()) / 1000);
+      document.getElementById('live-elapsed').textContent = fmtElapsed(elapsed);
+    }
+
+    // Render per-stage progress (compact)
+    const container = document.getElementById('live-stages');
+    const stages = ['extract', 'score', 'compose', 'audit'];
+    let html = '';
+    for (const s of stages) {
+      const ss = snap.stages[s];
+      if (!ss || ss.total === 0) continue;
+      const done = ss.completed.length + ss.failed.length + ss.cancelled.length;
+      const pct = ss.total > 0 ? Math.round((done / ss.total) * 100) : 0;
+      const isActive = ss.running.length > 0;
+      const isDone = done >= ss.total && ss.total > 0;
+      const cls = isDone ? 'done' : (isActive || snap.stage === s) ? 'active' : '';
+      html += '<div class="live-stage ' + cls + '">';
+      html += '<div class="ls-name">' + STAGE_NAMES[s] + ' <span style="color:var(--text-dim)">' + done + '/' + ss.total + '</span></div>';
+      html += '<div class="ls-bar"><div class="ls-bar-fill" style="width:' + pct + '%"></div></div>';
+      let statParts = ['✓' + ss.completed.length, '✕' + ss.failed.length];
+      if (ss.cancelled.length) statParts.push('⊘' + ss.cancelled.length);
+      if (isActive) statParts.push('▶' + ss.running.length);
+      html += '<div class="ls-stats">' + statParts.join(' ') + '</div>';
+      if (ss.running.length > 0) {
+        html += '<div class="ls-running">Running: #' + ss.running.join(', #') + '</div>';
+      }
+      html += '</div>';
+    }
+    container.innerHTML = html;
+
+    // Render task pool table
+    renderTaskPool(snap);
+  }
+
+  function renderTaskPool(snap) {
+    const poolDiv = document.getElementById('task-pool');
+    const tbody = document.getElementById('task-pool-body');
+    const stages = ['extract', 'score', 'compose', 'audit'];
+
+    // Collect all tasks with status
+    const tasks = [];
+    for (const s of stages) {
+      const ss = snap.stages[s];
+      if (!ss) continue;
+      // Running
+      for (const rd of (ss.runningDetails || [])) {
+        tasks.push({
+          jobId: rd.jobId, title: rd.title, company: rd.company,
+          stage: s, status: 'running', elapsedSec: rd.elapsedSec,
+        });
+      }
+      // Completed
+      for (const jid of (ss.completed || [])) {
+        tasks.push({ jobId: jid, stage: s, status: 'done' });
+      }
+      // Failed
+      for (const jid of (ss.failed || [])) {
+        tasks.push({ jobId: jid, stage: s, status: 'fail' });
+      }
+      // Cancelled
+      for (const jid of (ss.cancelled || [])) {
+        tasks.push({ jobId: jid, stage: s, status: 'cancelled' });
+      }
+    }
+
+    if (tasks.length === 0) {
+      poolDiv.style.display = 'none';
+      return;
+    }
+    poolDiv.style.display = '';
+
+    // Sort: running first (by stage order), then completed/failed/cancelled
+    const stageOrder = { extract: 0, score: 1, compose: 2, audit: 3 };
+    tasks.sort((a, b) => {
+      if (a.status === 'running' && b.status !== 'running') return -1;
+      if (b.status === 'running' && a.status !== 'running') return 1;
+      if (a.stage !== b.stage) return stageOrder[a.stage] - stageOrder[b.stage];
+      return a.jobId - b.jobId;
+    });
+
+    const statusIcons = {
+      running: '<span class="task-status running"><span class="task-spinner"></span> Running</span>',
+      done: '<span class="task-status done">✓ Done</span>',
+      fail: '<span class="task-status fail">✕ Failed</span>',
+      cancelled: '<span class="task-status cancelled">⊘ Cancelled</span>',
+    };
+
+    let rows = '';
+    for (const t of tasks) {
+      const elapsed = t.elapsedSec ? fmtElapsed(t.elapsedSec) : '—';
+      const label = t.title
+        ? (t.title || '') + (t.company ? ' <span style="color:var(--text-dim)">@ ' + t.company + '</span>' : '')
+        : '<span style="color:var(--text-dim)">—</span>';
+      const stageBadge = '<span style="color:var(--text-dim);font-size:10px;text-transform:uppercase">' + (STAGE_NAMES[t.stage] || t.stage) + '</span>';
+      const cancelBtn = t.status === 'running'
+        ? '<button class="btn-task-cancel" onclick="cancelTask(' + t.jobId + ')">Cancel</button>'
+        : '';
+
+      rows += '<tr>';
+      rows += '<td style="font-variant-numeric:tabular-nums;font-weight:600">#' + t.jobId + '</td>';
+      rows += '<td>' + stageBadge + '</td>';
+      rows += '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</td>';
+      rows += '<td>' + statusIcons[t.status] + '</td>';
+      rows += '<td style="font-variant-numeric:tabular-nums;color:var(--text-dim)">' + elapsed + '</td>';
+      rows += '<td style="text-align:right">' + cancelBtn + '</td>';
+      rows += '</tr>';
+    }
+    tbody.innerHTML = rows;
+  }
+
+  async function cancelTask(jobId) {
+    if (!confirm('Cancel task #' + jobId + '? The in-progress API call will be aborted.')) return;
+    try {
+      const resp = await fetch('/api/pipeline/tasks/' + jobId + '/cancel', { method: 'POST' });
+      const data = await resp.json();
+      if (!data.ok) {
+        alert('Failed to cancel: ' + (data.error || 'unknown'));
+      }
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
+  async function pollProgress() {
+    const resp = await fetch('/api/pipeline/status');
+    const snap = await resp.json();
+
+    if (snap.running) {
+      // Update simple progress
+      let msg = snap.stage ? STAGE_NAMES[snap.stage] : 'Running...';
+      document.getElementById('run-stage').textContent = msg;
+      document.getElementById('run-spinner').style.display = 'inline';
+      document.getElementById('run-btn').disabled = true;
+      document.getElementById('cancel-btn').style.display = 'inline-block';
+
+      // Update live panel
+      showLivePanel(snap);
+
+      pollTimer = setTimeout(pollProgress, 1000);
+    } else {
+      // Pipeline finished
+      document.getElementById('run-spinner').style.display = 'none';
+      document.getElementById('run-btn').disabled = false;
+      document.getElementById('cancel-btn').style.display = 'none';
+      document.getElementById('run-stage').textContent = snap.finishedAt ? 'Complete — reloading...' : 'Idle';
+      document.getElementById('live-panel').classList.remove('open');
+      if (snap.finishedAt) {
+        setTimeout(() => window.location.reload(), 1500);
+      }
+    }
+  }
+
+  // On page load, check if pipeline is already running
+  (async function checkRunning() {
+    try {
+      const resp = await fetch('/api/pipeline/status');
+      const snap = await resp.json();
+      if (snap.running) {
+        document.getElementById('run-btn').disabled = true;
+        document.getElementById('cancel-btn').style.display = 'inline-block';
+        document.getElementById('run-progress').style.display = 'block';
+        showLivePanel(snap);
+        pollProgress();
+      }
+    } catch (e) { /* ignore */ }
+  })();
 </script>
 
 <%- include('_foot') %>

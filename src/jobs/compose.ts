@@ -1,8 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, copyFileSync, mkdirSync } from 'node:fs';
 import { tailorJob } from './tailor.js';
 import { renderJob } from './render.js';
 import { getDb } from '../db/client.js';
-import { RESUMES_DIR, CANDIDATE_PATH } from '../utils/paths.js';
+import { jobResumeDir } from '../utils/paths.js';
+import { readCandidate } from '../utils/profile-store.js';
+import { getActiveUserId } from '../utils/user-context.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -23,8 +25,8 @@ function detectResumeVariant(jobId: number): string {
   // Try to load available variants from candidate profile
   let variants: string[] = [];
   try {
-    if (existsSync(CANDIDATE_PATH)) {
-      const candidateYaml = readFileSync(CANDIDATE_PATH, 'utf-8');
+    const candidateYaml = readCandidate(getActiveUserId());
+    if (candidateYaml) {
       // Look for resume_variants: section
       const match = candidateYaml.match(/^resume_variants:\s*\n((?:\s+-\s+.+\n?)*)/m);
       if (match?.[1]) {
@@ -88,7 +90,7 @@ export interface ComposeResult {
  * @param jobId Job to compose for
  * @param variantName Optional resume variant name. Auto-selected from job title if not provided.
  */
-export async function composeJob(jobId: number, variantName?: string): Promise<ComposeResult> {
+export async function composeJob(jobId: number, variantName?: string, signal?: AbortSignal): Promise<ComposeResult> {
   const db = getDb();
 
   // Auto-select resume variant based on job title keywords
@@ -98,25 +100,41 @@ export async function composeJob(jobId: number, variantName?: string): Promise<C
   }
   logger.info(`Composing resume for job #${jobId}...`);
 
-  // Check for previous audit feedback (retry loop)
-  const feedbackPath = `${RESUMES_DIR}/${jobId}-audit-feedback.json`;
+  // Check for previous audit feedback (retry loop).
+  // Consume and delete the feedback — it's a one-time message from audit.
+  // If audit fails again, it writes a fresh one. If a human triggered
+  // re-compose, the old counter is cleared naturally.
+  const feedbackPath = `${jobResumeDir(jobId)}/audit-feedback.json`;
   let auditFeedback: string | undefined;
+  let composeVersion = 1;
   if (existsSync(feedbackPath)) {
     try {
       const fb = JSON.parse(readFileSync(feedbackPath, 'utf-8'));
-      console.log(`↻ Retry: using audit feedback (score ${fb.score}/100, ${fb.issues.length} issues)`);
+      composeVersion = (fb.attempt || 0) + 1;
+      console.log(`↻ Retry v${composeVersion}: using audit feedback (attempt ${fb.attempt || '?'}, score ${fb.score}/100, ${fb.issues?.length || 0} issues)`);
       auditFeedback = JSON.stringify(fb, null, 2);
     } catch {
       // Corrupt feedback — ignore
     }
+    // Keep the feedback file — audit will overwrite it with updated attempt counter.
+    // We just read the attempt number for versioning purposes.
   }
 
-  // Step 1: Tailor (with optional audit feedback and variant)
-  const tailorResult = await tailorJob(jobId, auditFeedback, resolvedVariant);
-  if (!tailorResult.success) {
-    return { success: false, jobId, error: `Tailor failed: ${tailorResult.error}` };
+  // Read previous tailored output so the LLM can make targeted edits on retries
+  let previousOutput: string | undefined;
+  if (auditFeedback) {
+    const prevYaml = `${jobResumeDir(jobId)}/tailored.yaml`;
+    if (existsSync(prevYaml)) {
+      try { previousOutput = readFileSync(prevYaml, 'utf-8'); } catch { /* ignore */ }
+    }
   }
-  console.log(`✓ Tailored: ${tailorResult.versionName}${resolvedVariant && resolvedVariant !== 'general' ? ` (${resolvedVariant} variant)` : ''}`);
+
+  // Step 1: Customize (with optional audit feedback, previous output, variant, and version)
+  const tailorResult = await tailorJob(jobId, auditFeedback, resolvedVariant, signal, composeVersion, previousOutput);
+  if (!tailorResult.success) {
+    return { success: false, jobId, error: `Customize failed: ${tailorResult.error}` };
+  }
+  console.log(`✓ Customized: ${tailorResult.versionName}${resolvedVariant && resolvedVariant !== 'general' ? ` (${resolvedVariant} variant)` : ''}`);
 
   // Step 2: Render
   const renderResult = await renderJob(jobId);
@@ -125,16 +143,32 @@ export async function composeJob(jobId: number, variantName?: string): Promise<C
   }
   console.log(`✓ PDF: ${renderResult.pdfPath}`);
 
-  // Auto-generate cover letter
+  // Auto-generate cover letter (with version for debug prompts)
   try {
     const { generateCoverLetter } = await import('./cover-letter.js');
-    const cl = await generateCoverLetter(jobId);
+    const cl = await generateCoverLetter(jobId, 'professional', composeVersion);
     if (cl.success) {
       console.log(`✓ Cover letter: ${cl.pdfPath}`);
     }
   } catch {
     // Cover letter is optional — don't block compose
   }
+
+  // Save versioned copies so user can compare iterations
+  const dir = jobResumeDir(jobId);
+  mkdirSync(dir, { recursive: true });
+  const v = composeVersion;
+  const suffix = `-v${v}`;
+  copyFileSync(`${dir}/tailored.yaml`, `${dir}/tailored${suffix}.yaml`);
+  copyFileSync(`${dir}/resume.tex`, `${dir}/resume${suffix}.tex`);
+  copyFileSync(`${dir}/resume.pdf`, `${dir}/resume${suffix}.pdf`);
+  if (existsSync(`${dir}/cover-letter.tex`)) {
+    copyFileSync(`${dir}/cover-letter.tex`, `${dir}/cover-letter${suffix}.tex`);
+  }
+  if (existsSync(`${dir}/cover-letter.pdf`)) {
+    copyFileSync(`${dir}/cover-letter.pdf`, `${dir}/cover-letter${suffix}.pdf`);
+  }
+  console.log(`  📁 Saved versioned copies as *${suffix}.* in ${dir}/`);
 
   // Set unified status
   db.prepare(

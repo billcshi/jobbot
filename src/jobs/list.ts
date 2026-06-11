@@ -1,4 +1,5 @@
 import { getDb } from '../db/client.js';
+import { getActiveUserId } from '../utils/user-context.js';
 
 interface JobListRow {
   id: number;
@@ -78,11 +79,12 @@ export interface ListOptions {
 export function listJobs(opts: ListOptions = {}): void {
   const db = getDb();
 
-  let query = 'SELECT id, tier, score, company, title, ats_type, status, url FROM jobs';
-  const params: unknown[] = [];
+  const userId = getActiveUserId();
+  let query = 'SELECT id, tier, score, company, title, ats_type, status, url FROM jobs WHERE user_id = ?';
+  const params: unknown[] = [userId];
 
   if (opts.tier) {
-    query += ' WHERE tier = ?';
+    query += ' AND tier = ?';
     params.push(opts.tier);
   }
 

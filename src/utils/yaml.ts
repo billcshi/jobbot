@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 
+/** Parse a YAML string into an object. */
+export function parseYaml<T = unknown>(content: string): T {
+  return yaml.load(content) as T;
+}
+
 /** Read and parse a YAML file. Returns `fallback` if the file is missing. */
 export function readYamlFile<T = unknown>(filePath: string, fallback?: T): T {
   try {
