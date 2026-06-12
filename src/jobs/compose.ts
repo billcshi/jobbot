@@ -152,7 +152,7 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
   console.log(`✓ Customized: ${tailorResult.versionName}${resolvedVariant && resolvedVariant !== 'general' ? ` (${resolvedVariant} variant)` : ''}`);
 
   // Step 2: Render (with visual feedback for LaTeX fixes)
-  const renderResult = await renderJob(jobId, visualFeedback);
+  const renderResult = await renderJob(jobId, visualFeedback, composeVersion);
   if (!renderResult.success) {
     return { success: false, jobId, error: `Render failed: ${renderResult.error}` };
   }

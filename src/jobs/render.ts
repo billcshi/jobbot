@@ -43,6 +43,8 @@ export interface RenderResult {
 async function fixLatexWithLLM(
   texContent: string,
   visualIssues: string[],
+  jobId: number,
+  version: number,
   signal?: AbortSignal,
 ): Promise<string | null> {
   const apiKey = getDeepseekKey();
@@ -61,6 +63,22 @@ async function fixLatexWithLLM(
     texContent,
     '```',
   ].join('\n');
+
+  // Save prompt dump for debugging
+  try {
+    const { mkdirSync: mkdir, writeFileSync: writeFile } = await import('node:fs');
+    const dir = jobResumeDir(jobId);
+    mkdir(dir, { recursive: true });
+    const promptDump = [
+      '=== SYSTEM PROMPT ===',
+      FIX_LATEX_PROMPT,
+      '',
+      '=== USER MESSAGE ===',
+      userMessage,
+    ].join('\n');
+    writeFile(`${dir}/fix-latex-prompt-v${version}.txt`, promptDump, 'utf-8');
+    console.log(`  📝 Wrote fix-latex prompt: ${dir}/fix-latex-prompt-v${version}.txt`);
+  } catch { /* non-critical */ }
 
   const startMs = Date.now();
   try {
@@ -210,7 +228,7 @@ interface TailoredData {
  * 4. Inject data into the template
  * 5. Compile with pdflatex
  */
-export async function renderJob(jobId: number, visualFeedback?: string[]): Promise<RenderResult> {
+export async function renderJob(jobId: number, visualFeedback?: string[], composeVersion?: number): Promise<RenderResult> {
   const db = getDb();
   const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(jobId) as
     | { id: number }
@@ -488,7 +506,8 @@ export async function renderJob(jobId: number, visualFeedback?: string[]): Promi
   let latexFixed = false;
   if (visualFeedback && visualFeedback.length > 0) {
     console.log(`  🔧 Fixing LaTeX for ${visualFeedback.length} visual issue(s)...`);
-    const fixed = await fixLatexWithLLM(tex, visualFeedback);
+    const v = composeVersion ?? 1;
+    const fixed = await fixLatexWithLLM(tex, visualFeedback, jobId, v);
     if (fixed) {
       tex = fixed;
       latexFixed = true;
