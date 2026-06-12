@@ -322,7 +322,8 @@
     <input type="text" id="instr-audit" class="instr-input" placeholder="Optional: AI instruction for re-audit..." />
     <button class="btn-regen" onclick="regenerate('audit', 'instr-audit')">🔄 Re-audit</button>
     <% if (auditData) { %>
-      <button class="btn-regen" onclick="recomposeWithAudit()" title="Re-compose with audit feedback, then re-audit">🔧 Re-compose with Feedback</button>
+      <button class="btn-regen" onclick="recomposeWithAudit(true)" title="Re-compose with audit feedback + LaTeX layout fixes, then re-audit">🔧 Re-compose with TeX Fix</button>
+      <button class="btn-regen" onclick="recomposeWithAudit(false)" title="Re-compose with audit feedback (content only, no LaTeX changes), then re-audit">🔧 Re-compose (Content Only)</button>
     <% } %>
     <span class="regen-status" id="status-audit"></span>
   </div>
@@ -689,11 +690,12 @@ async function runFullPipeline() {
   }
 }
 
-async function recomposeWithAudit() {
-  if (!confirm('Re-compose with audit feedback and re-audit? This will regenerate the resume using the latest audit suggestions, fix LaTeX layout issues, then audit the result.')) return;
+async function recomposeWithAudit(fixLatex) {
+  const label = fixLatex ? 'with TeX layout fixes' : 'content only';
+  if (!confirm(`Re-compose ${label} and re-audit? This will regenerate the resume${fixLatex ? ' and fix LaTeX layout issues' : ''} using the latest audit suggestions, then audit the result.`)) return;
   const statusEl = document.getElementById('run-from-status');
   const btn = document.getElementById('btn-run-pipeline');
-  statusEl.textContent = '⏳ Re-composing with audit feedback...';
+  statusEl.textContent = '⏳ Re-composing ' + label + '...';
   statusEl.style.color = 'var(--yellow)';
   if (btn) btn.disabled = true;
 
@@ -701,7 +703,7 @@ async function recomposeWithAudit() {
     const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stage: 'compose' }),
+      body: JSON.stringify({ stage: 'compose', fixLatex }),
     });
     const data = await resp.json();
     if (data.ok) {

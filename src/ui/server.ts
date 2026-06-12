@@ -1153,7 +1153,7 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
  */
 app.post('/api/jobs/:id/run-from', async (req, res) => {
   const jobId = Number(req.params.id);
-  const { stage } = (req.body || {}) as { stage?: string };
+  const { stage, fixLatex } = (req.body || {}) as { stage?: string; fixLatex?: boolean };
   const userId = res.locals.userId;
   const db = getDb();
 
@@ -1311,7 +1311,7 @@ app.post('/api/jobs/:id/run-from', async (req, res) => {
           // Compose
           const composeCtrl = pipelineState.taskStarted('compose', jobId, meta);
           try {
-            const composeResult = await runFromCompose(jobId, undefined, composeCtrl.signal);
+            const composeResult = await runFromCompose(jobId, undefined, composeCtrl.signal, { fixLatex });
             if (composeResult.success) {
               console.log(`  ✓ run-from #${jobId} compose: ${composeResult.pdfPath}`);
               pipelineState.taskCompleted('compose', jobId);

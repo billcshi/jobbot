@@ -90,7 +90,7 @@ export interface ComposeResult {
  * @param jobId Job to compose for
  * @param variantName Optional resume variant name. Auto-selected from job title if not provided.
  */
-export async function composeJob(jobId: number, variantName?: string, signal?: AbortSignal): Promise<ComposeResult> {
+export async function composeJob(jobId: number, variantName?: string, signal?: AbortSignal, opts?: { fixLatex?: boolean }): Promise<ComposeResult> {
   const db = getDb();
 
   // Auto-select resume variant based on job title keywords
@@ -131,9 +131,11 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
 
   // Extract visual issues from audit.json for LaTeX template fixing.
   // Content issues go to tailor (YAML changes); visual issues go to render (LaTeX changes).
+  // Only when fixLatex is not explicitly disabled (defaults to true for audit retry compat).
+  const fixLatex = opts?.fixLatex !== false;
   let visualFeedback: string[] | undefined;
   const auditJsonPath = `${jobResumeDir(jobId)}/audit.json`;
-  if (auditFeedback && existsSync(auditJsonPath)) {
+  if (fixLatex && auditFeedback && existsSync(auditJsonPath)) {
     try {
       const auditJson = JSON.parse(readFileSync(auditJsonPath, 'utf-8'));
       const visualIssues: Array<{ description: string; suggestion: string }> = auditJson.visualIssues || [];
@@ -158,17 +160,6 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
   }
   console.log(`✓ PDF: ${renderResult.pdfPath}`);
 
-  // Auto-generate cover letter (with version for debug prompts)
-  try {
-    const { generateCoverLetter } = await import('./cover-letter.js');
-    const cl = await generateCoverLetter(jobId, 'professional', composeVersion);
-    if (cl.success) {
-      console.log(`✓ Cover letter: ${cl.pdfPath}`);
-    }
-  } catch {
-    // Cover letter is optional — don't block compose
-  }
-
   // Save versioned copies so user can compare iterations
   const dir = jobResumeDir(jobId);
   mkdirSync(dir, { recursive: true });
@@ -177,12 +168,6 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
   copyFileSync(`${dir}/tailored.yaml`, `${dir}/tailored${suffix}.yaml`);
   copyFileSync(`${dir}/resume.tex`, `${dir}/resume${suffix}.tex`);
   copyFileSync(`${dir}/resume.pdf`, `${dir}/resume${suffix}.pdf`);
-  if (existsSync(`${dir}/cover-letter.tex`)) {
-    copyFileSync(`${dir}/cover-letter.tex`, `${dir}/cover-letter${suffix}.tex`);
-  }
-  if (existsSync(`${dir}/cover-letter.pdf`)) {
-    copyFileSync(`${dir}/cover-letter.pdf`, `${dir}/cover-letter${suffix}.pdf`);
-  }
   console.log(`  📁 Saved versioned copies as *${suffix}.* in ${dir}/`);
 
   // Set unified status
