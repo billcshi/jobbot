@@ -1,13 +1,16 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
-import { PROJECT_ROOT, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
+import { PROJECT_ROOT, RESUMES_DIR, PROMPTS_DIR, jobResumeDir } from '../utils/paths.js';
 import { readCandidate } from '../utils/profile-store.js';
 import { getActiveUserId } from '../utils/user-context.js';
 import { readYamlFile, parseYaml } from '../utils/yaml.js';
+import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
+import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 
 const LATEX_TEMPLATE_PATH = `${PROJECT_ROOT}/resumes/master.tex`;
+const FIX_LATEX_PROMPT = readFileSync(`${PROMPTS_DIR}/fix-latex.md`, 'utf-8');
 
 /** Escape special LaTeX characters in user-provided text. */
 function latexEscape(s: string | null | undefined): string {
@@ -30,6 +33,104 @@ export interface RenderResult {
   pdfPath?: string;
   texPath?: string;
   error?: string;
+  latexFixed?: boolean;
+}
+
+/**
+ * Use an LLM to fix LaTeX formatting issues found by visual audit.
+ * Takes the generated .tex content + visual issues, returns fixed .tex.
+ */
+async function fixLatexWithLLM(
+  texContent: string,
+  visualIssues: string[],
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const apiKey = getDeepseekKey();
+  if (!apiKey) {
+    logger.warn('No DeepSeek API key — skipping LaTeX fix.');
+    return null;
+  }
+
+  const userMessage = [
+    '## Visual Audit Issues',
+    'Fix the following visual/layout problems in the LaTeX:',
+    ...visualIssues.map((v, i) => `${i + 1}. ${v}`),
+    '',
+    '## Current LaTeX',
+    '```latex',
+    texContent,
+    '```',
+  ].join('\n');
+
+  const startMs = Date.now();
+  try {
+    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: getDeepseekModel(),
+        messages: [
+          { role: 'system', content: FIX_LATEX_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        max_tokens: 16384,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
+    }
+
+    const data = (await response.json()) as {
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    };
+    let fixedTex = data.choices[0]?.message?.content || '';
+
+    // Strip markdown code fences if present
+    fixedTex = fixedTex.replace(/^```(?:latex|tex)?\s*\n/, '').replace(/\n```\s*$/, '');
+
+    // Validate: must start with \documentclass and end with \end{document}
+    if (!fixedTex.includes('\\documentclass') || !fixedTex.includes('\\end{document}')) {
+      logger.warn('LaTeX fix LLM returned invalid output — using original.');
+      return null;
+    }
+
+    const usage = extractUsage(data as Record<string, unknown>);
+    logAiCall({
+      operation: 'fix-latex',
+      model: getDeepseekModel(),
+      provider: 'deepseek',
+      endpoint: 'https://api.deepseek.com/v1/chat/completions',
+      requestSummary: `Fix LaTeX: ${visualIssues.length} visual issue(s)`,
+      responseSummary: `${fixedTex.length} chars, valid tex`,
+      ...usage,
+      durationMs: Date.now() - startMs,
+      success: true,
+    });
+
+    return fixedTex;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logAiCall({
+      operation: 'fix-latex',
+      model: getDeepseekModel(),
+      provider: 'deepseek',
+      endpoint: 'https://api.deepseek.com/v1/chat/completions',
+      requestSummary: `Fix LaTeX: ${visualIssues.length} issue(s)`,
+      responseSummary: msg,
+      durationMs: Date.now() - startMs,
+      success: false,
+      error: msg,
+    });
+    logger.warn(`LaTeX fix LLM failed: ${msg}`);
+    return null;
+  }
 }
 
 interface CandidateProfile {
@@ -109,7 +210,7 @@ interface TailoredData {
  * 4. Inject data into the template
  * 5. Compile with pdflatex
  */
-export async function renderJob(jobId: number): Promise<RenderResult> {
+export async function renderJob(jobId: number, visualFeedback?: string[]): Promise<RenderResult> {
   const db = getDb();
   const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(jobId) as
     | { id: number }
@@ -383,6 +484,20 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
   tex = tex.replace(/\{\{[#/]?\w+\}\}/g, '');
   tex = tex.replace(/\{\{(\w+)\}\}/g, '');
 
+  // ---- Fix LaTeX for visual issues (before writing + compiling) ----
+  let latexFixed = false;
+  if (visualFeedback && visualFeedback.length > 0) {
+    console.log(`  🔧 Fixing LaTeX for ${visualFeedback.length} visual issue(s)...`);
+    const fixed = await fixLatexWithLLM(tex, visualFeedback);
+    if (fixed) {
+      tex = fixed;
+      latexFixed = true;
+      console.log('  ✓ LaTeX adjusted for visual feedback.');
+    } else {
+      console.log('  ⚠ LaTeX fix skipped — using original.');
+    }
+  }
+
   // ---- Write .tex file ----
   mkdirSync(RESUMES_DIR, { recursive: true });
   const texPath = `${jobResumeDir(jobId)}/resume.tex`;
@@ -420,7 +535,7 @@ export async function renderJob(jobId: number): Promise<RenderResult> {
     ).run(jobId);
 
     logger.info(`PDF rendered: ${pdfPath}`);
-    return { success: true, jobId, pdfPath, texPath };
+    return { success: true, jobId, pdfPath, texPath, latexFixed };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, jobId, texPath, error: `pdflatex failed: ${msg}` };

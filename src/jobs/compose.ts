@@ -129,6 +129,21 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
     }
   }
 
+  // Extract visual issues from audit.json for LaTeX template fixing.
+  // Content issues go to tailor (YAML changes); visual issues go to render (LaTeX changes).
+  let visualFeedback: string[] | undefined;
+  const auditJsonPath = `${jobResumeDir(jobId)}/audit.json`;
+  if (auditFeedback && existsSync(auditJsonPath)) {
+    try {
+      const auditJson = JSON.parse(readFileSync(auditJsonPath, 'utf-8'));
+      const visualIssues: Array<{ description: string; suggestion: string }> = auditJson.visualIssues || [];
+      if (visualIssues.length > 0) {
+        visualFeedback = visualIssues.map((v) => `${v.description} → ${v.suggestion}`);
+        console.log(`  👁 ${visualFeedback.length} visual issue(s) → will fix LaTeX template`);
+      }
+    } catch { /* ignore */ }
+  }
+
   // Step 1: Customize (with optional audit feedback, previous output, variant, and version)
   const tailorResult = await tailorJob(jobId, auditFeedback, resolvedVariant, signal, composeVersion, previousOutput);
   if (!tailorResult.success) {
@@ -136,8 +151,8 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
   }
   console.log(`✓ Customized: ${tailorResult.versionName}${resolvedVariant && resolvedVariant !== 'general' ? ` (${resolvedVariant} variant)` : ''}`);
 
-  // Step 2: Render
-  const renderResult = await renderJob(jobId);
+  // Step 2: Render (with visual feedback for LaTeX fixes)
+  const renderResult = await renderJob(jobId, visualFeedback);
   if (!renderResult.success) {
     return { success: false, jobId, error: `Render failed: ${renderResult.error}` };
   }

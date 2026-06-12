@@ -184,7 +184,7 @@ The web UI provides: dashboard with analytics charts, pipeline management, batch
 | `pnpm jobbot render --job <id>` | LaTeX → PDF rendering (internal) |
 | `pnpm jobbot compose --job <id>` | Tailor + render in one step |
 | `pnpm jobbot cover-letter --job <id>` | Generate cover letter via LLM |
-| `pnpm jobbot audit --job <id>` | Content + visual audit of rendered PDF |
+| `pnpm jobbot audit --job <id>` | Content (DeepSeek committee) + visual (GPT-5.5/Claude) audit |
 | `pnpm jobbot schedule --once` | Run pipeline once |
 | `pnpm jobbot schedule --interval <minutes>` | Run pipeline on a recurring interval |
 | `pnpm test` | Run the test suite |
@@ -255,6 +255,6 @@ jobbot/
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro, configurable model) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro) · OpenAI GPT-5.5 (vision) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
 
 Designed for use with **Claude Code** and other AI coding agents on **WSL2**.

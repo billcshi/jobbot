@@ -12,8 +12,13 @@ api_keys:
 
   anthropic: ""     # Anthropic (Claude) API key (https://console.anthropic.com/)
                      # Used for: audit-visual (Claude Vision reviews rendered PDF)
-                     # Optional — visual audit skips gracefully if not set
+                     # Optional — visual audit falls back to OpenAI if not set
                      # Env fallback: ANTHROPIC_API_KEY
+
+  openai: ""        # OpenAI API key (https://platform.openai.com/api-keys)
+                     # Used for: audit-visual (GPT-5.5 vision reviews rendered PDF)
+                     # Optional — visual audit falls back to OpenAI if Anthropic not set
+                     # Env fallback: OPENAI_API_KEY
 
 # DeepSeek model to use for all LLM calls.
 # Default: deepseek-v4-pro (best quality)

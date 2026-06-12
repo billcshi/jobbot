@@ -89,10 +89,10 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`.
 ```
 CLI (src/cli.ts → tsx src/cli.ts)
   ├── db/          SQLite via better-sqlite3 (schema, init, client)
-  ├── jobs/        Pipeline: extract, score, compose (tailor+render), audit, cover-letter
+  ├── jobs/        Pipeline: extract, score, compose (tailor+render+fix-latex), audit, cover-letter
   │   ├── extractors/   LLM-based job detail extraction (DeepSeek)
   │   └── scorers/      LLM + deterministic scoring (DeepSeek flash)
-  ├── resume/      LaTeX rendering, template validation
+  ├── resume/      LaTeX rendering, LLM template fixing, validation
   ├── ui/          Express web server + EJS views (primary interface)
   ├── apply/       Application orchestration (future)
   │   └── adapters/  Greenhouse, Lever, Ashby, Stagehand (future)

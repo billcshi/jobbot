@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
 import { PROJECT_ROOT, jobResumeDir } from '../utils/paths.js';
-import { getDeepseekKey, getAnthropicKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
+import { getDeepseekKey, getAnthropicKey, getOpenAIKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
@@ -253,43 +253,63 @@ async function auditContent(
   return auditContentCommittee(resumeText, jobDescription, apiKey, signal);
 }
 
-// ----- visual audit (Claude Vision) ------------------------------------------
+// ----- visual audit (Anthropic Claude or OpenAI GPT-4o) ----------------------
 
 async function auditVisual(
   imagePaths: string[],
   jobDescription: string,
   signal?: AbortSignal,
 ): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
-  // Try Anthropic API for vision, fall back to OpenAI-compatible
-  const apiKey = getAnthropicKey();
+  const anthropicKey = getAnthropicKey();
+  const openaiKey = getOpenAIKey();
 
-  if (!apiKey) {
-    logger.warn('No Anthropic API key configured — skipping visual audit.');
-    return { issues: [], score: 70, summary: 'Visual audit skipped — no vision-capable API key in local/config.yaml.' };
+  // Try Anthropic first, fall back to OpenAI if Anthropic fails or no key.
+  if (anthropicKey) {
+    const result = await auditVisualAnthropic(imagePaths, jobDescription, anthropicKey, signal);
+    // If Anthropic failed (score 0 with error message), try OpenAI before giving up
+    if (result.score > 0 || !openaiKey) return result;
+    console.log('  Anthropic visual audit failed — falling back to OpenAI GPT-5.5...');
+    return auditVisualOpenAI(imagePaths, jobDescription, openaiKey, signal);
+  }
+  if (openaiKey) {
+    return auditVisualOpenAI(imagePaths, jobDescription, openaiKey, signal);
   }
 
-  // Try Anthropic API (Claude supports vision)
+  logger.warn('No Anthropic or OpenAI API key configured — skipping visual audit.');
+  return { issues: [], score: 70, summary: 'Visual audit skipped — no vision-capable API key in local/config.yaml. Set api_keys.anthropic or api_keys.openai.' };
+}
+
+const VISUAL_PROMPT = [
+  'You are reviewing a rendered resume PDF. Look for visual/layout issues:',
+  '- Text overflow or clipping',
+  '- Uneven spacing or alignment',
+  '- Font inconsistencies',
+  '- Section header formatting',
+  '- Overall readability and visual polish',
+  '- Page breaks in awkward places',
+  '- Margin or padding issues',
+  '',
+  'Return ONLY valid JSON:',
+  '{"issues": [{"severity": "high|medium|low", "category": "visual|layout|formatting", "description": "...", "suggestion": "..."}], "score": 0-100, "summary": "..."}',
+].join('\n');
+
+async function auditVisualAnthropic(
+  imagePaths: string[],
+  jobDescription: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
   try {
-    const images = imagePaths.slice(0, 3).map(imageToBase64); // Max 3 pages
+    const images = imagePaths.slice(0, 3).map(imageToBase64);
 
     const content: Array<Record<string, unknown>> = [
       {
         type: 'text',
         text: [
-          'You are reviewing a rendered resume PDF. Look for visual/layout issues:',
-          '- Text overflow or clipping',
-          '- Uneven spacing or alignment',
-          '- Font inconsistencies',
-          '- Section header formatting',
-          '- Overall readability and visual polish',
-          '- Page breaks in awkward places',
-          '- Margin or padding issues',
+          VISUAL_PROMPT,
           '',
           'Job context (for relevance checking):',
           jobDescription.slice(0, 2000),
-          '',
-          'Return ONLY valid JSON:',
-          '{"issues": [{"severity": "high|medium|low", "category": "visual|layout|formatting", "description": "...", "suggestion": "..."}], "score": 0-100, "summary": "..."}',
         ].join('\n'),
       },
       ...images.map((b64) => ({
@@ -298,83 +318,175 @@ async function auditVisual(
       })),
     ];
 
-    const visualRequestBody = {
+    const requestBody = {
       model: 'claude-sonnet-4-6',
       max_tokens: 8192,
       messages: [{ role: 'user', content }],
     };
 
-    const visStartMs = Date.now();
+    const startMs = Date.now();
 
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify(visualRequestBody),
-        signal,
-      });
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
 
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Anthropic API error ${response.status}: ${body.slice(0, 200)}`);
-      }
-
-      const data = (await response.json()) as {
-        content: [{ text: string }];
-        usage?: Record<string, number>;
-      };
-      const jsonText = data.content[0]?.text || '{}';
-      const parsed = parseLLMJson(jsonText, 'audit-visual') as Record<string, any>; // LLM output is inherently untyped
-      const usage = extractUsage(data as Record<string, unknown>);
-
-      const result = {
-        issues: (parsed.issues || []).map((i: Record<string, unknown>) => ({
-          severity: i.severity || 'medium',
-          category: i.category || 'visual',
-          description: i.description || '',
-          suggestion: i.suggestion || '',
-        })),
-        score: typeof parsed.score === 'number' ? parsed.score : 70,
-        summary: parsed.summary || '',
-      };
-
-      logAiCall({
-        operation: 'audit-visual',
-        model: 'claude-sonnet-4-6',
-        provider: 'anthropic',
-        endpoint: 'https://api.anthropic.com/v1/messages',
-        requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
-        responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
-        ...usage,
-        durationMs: Date.now() - visStartMs,
-        success: true,
-      });
-
-      return result;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logAiCall({
-        operation: 'audit-visual',
-        model: 'claude-sonnet-4-6',
-        provider: 'anthropic',
-        endpoint: 'https://api.anthropic.com/v1/messages',
-        requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
-        responseSummary: msg,
-        durationMs: Date.now() - visStartMs,
-        success: false,
-        error: msg,
-      });
-      logger.warn(`Visual audit failed: ${msg}`);
-      return { issues: [], score: 0, summary: `Visual audit error: ${msg}` };
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Anthropic API error ${response.status}: ${body.slice(0, 200)}`);
     }
+
+    const data = (await response.json()) as {
+      content: [{ text: string }];
+      usage?: Record<string, number>;
+    };
+    const jsonText = data.content[0]?.text || '{}';
+    const parsed = parseLLMJson(jsonText, 'audit-visual') as Record<string, any>;
+    const usage = extractUsage(data as Record<string, unknown>);
+
+    const result = {
+      issues: (parsed.issues || []).map((i: Record<string, unknown>) => ({
+        severity: i.severity || 'medium',
+        category: i.category || 'visual',
+        description: i.description || '',
+        suggestion: i.suggestion || '',
+      })),
+      score: typeof parsed.score === 'number' ? parsed.score : 70,
+      summary: parsed.summary || '',
+    };
+
+    logAiCall({
+      operation: 'audit-visual',
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      endpoint: 'https://api.anthropic.com/v1/messages',
+      requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
+      responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
+      ...usage,
+      durationMs: Date.now() - startMs,
+      success: true,
+    });
+
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn(`Visual audit failed: ${msg}`);
-    return { issues: [], score: 0, summary: `Visual audit error: ${msg}` };
+    logAiCall({
+      operation: 'audit-visual',
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      endpoint: 'https://api.anthropic.com/v1/messages',
+      requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
+      responseSummary: msg,
+      durationMs: 0,
+      success: false,
+      error: msg,
+    });
+    logger.warn(`Visual audit (Anthropic) failed: ${msg}`);
+    return { issues: [], score: 0, summary: `Visual audit error (Anthropic): ${msg}` };
+  }
+}
+
+async function auditVisualOpenAI(
+  imagePaths: string[],
+  jobDescription: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ issues: AuditIssue[]; score: number; summary: string }> {
+  try {
+    const images = imagePaths.slice(0, 3).map(imageToBase64);
+
+    const content: Array<Record<string, unknown>> = [
+      {
+        type: 'text',
+        text: [
+          VISUAL_PROMPT,
+          '',
+          'Job context (for relevance checking):',
+          jobDescription.slice(0, 2000),
+        ].join('\n'),
+      },
+      ...images.map((b64) => ({
+        type: 'image_url',
+        image_url: { url: b64 },
+      })),
+    ];
+
+    const requestBody = {
+      model: 'gpt-5.5',
+      max_completion_tokens: 4096,
+      messages: [{ role: 'user', content }],
+    };
+
+    const startMs = Date.now();
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 200)}`);
+    }
+
+    const data = (await response.json()) as {
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    };
+    const jsonText = data.choices[0]?.message?.content || '{}';
+    const parsed = parseLLMJson(jsonText, 'audit-visual') as Record<string, any>;
+    const usage = extractUsage(data as Record<string, unknown>);
+
+    const result = {
+      issues: (parsed.issues || []).map((i: Record<string, unknown>) => ({
+        severity: i.severity || 'medium',
+        category: i.category || 'visual',
+        description: i.description || '',
+        suggestion: i.suggestion || '',
+      })),
+      score: typeof parsed.score === 'number' ? parsed.score : 70,
+      summary: parsed.summary || '',
+    };
+
+    logAiCall({
+      operation: 'audit-visual',
+      model: 'gpt-5.5',
+      provider: 'openai',
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
+      responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
+      ...usage,
+      durationMs: Date.now() - startMs,
+      success: true,
+    });
+
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logAiCall({
+      operation: 'audit-visual',
+      model: 'gpt-5.5',
+      provider: 'openai',
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
+      responseSummary: msg,
+      durationMs: 0,
+      success: false,
+      error: msg,
+    });
+    logger.warn(`Visual audit (OpenAI) failed: ${msg}`);
+    return { issues: [], score: 0, summary: `Visual audit error (OpenAI): ${msg}` };
   }
 }
 

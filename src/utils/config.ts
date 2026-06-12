@@ -56,6 +56,7 @@ interface Config {
   api_keys: {
     deepseek: string;
     anthropic: string;
+    openai: string;
   };
   deepseek_model: string;
   /** DeepSeek thinking mode configuration. */
@@ -73,6 +74,7 @@ function loadConfig(): Config {
     api_keys: {
       deepseek: '',
       anthropic: '',
+      openai: '',
     },
     deepseek_model: 'deepseek-v4-pro',
   };
@@ -89,6 +91,7 @@ function loadConfig(): Config {
       api_keys: {
         deepseek: parsed?.api_keys?.deepseek || '',
         anthropic: parsed?.api_keys?.anthropic || '',
+        openai: parsed?.api_keys?.openai || '',
       },
       deepseek_model: parsed?.deepseek_model || 'deepseek-v4-pro',
       deepseek_thinking: parsed?.deepseek_thinking as DeepseekThinkingConfig | undefined,
@@ -116,7 +119,16 @@ export function getDeepseekKey(): string {
  */
 export function getAnthropicKey(): string {
   const config = loadConfig();
-  return config.api_keys.anthropic || process.env['ANTHROPIC_API_KEY'] || process.env['ANTHROPIC_AUTH_TOKEN'] || '';
+  return config.api_keys.anthropic || process.env['ANTHROPIC_API_KEY'] || '';
+}
+
+/**
+ * Get the OpenAI API key.
+ * Checks: local/config.yaml → OPENAI_API_KEY env var
+ */
+export function getOpenAIKey(): string {
+  const config = loadConfig();
+  return config.api_keys.openai || process.env['OPENAI_API_KEY'] || '';
 }
 
 /**
