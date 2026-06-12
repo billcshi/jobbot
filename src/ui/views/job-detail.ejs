@@ -321,6 +321,9 @@
   <div class="regenerate-row">
     <input type="text" id="instr-audit" class="instr-input" placeholder="Optional: AI instruction for re-audit..." />
     <button class="btn-regen" onclick="regenerate('audit', 'instr-audit')">🔄 Re-audit</button>
+    <% if (auditData) { %>
+      <button class="btn-regen" onclick="recomposeWithAudit()" title="Re-compose with audit feedback, then re-audit">🔧 Re-compose with Feedback</button>
+    <% } %>
     <span class="regen-status" id="status-audit"></span>
   </div>
 </div>
@@ -672,6 +675,37 @@ async function runFullPipeline() {
     const data = await resp.json();
     if (data.ok) {
       statusEl.textContent = '✓ Pipeline started — polling...';
+      statusEl.style.color = 'var(--green)';
+      pollPipelineStatus();
+    } else {
+      statusEl.textContent = '✕ ' + (data.error || 'Failed');
+      statusEl.style.color = 'var(--red)';
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    statusEl.textContent = '✕ ' + err.message;
+    statusEl.style.color = 'var(--red)';
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function recomposeWithAudit() {
+  if (!confirm('Re-compose with audit feedback and re-audit? This will regenerate the resume using the latest audit suggestions, fix LaTeX layout issues, then audit the result.')) return;
+  const statusEl = document.getElementById('run-from-status');
+  const btn = document.getElementById('btn-run-pipeline');
+  statusEl.textContent = '⏳ Re-composing with audit feedback...';
+  statusEl.style.color = 'var(--yellow)';
+  if (btn) btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage: 'compose' }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '✓ Compose started — auditing next...';
       statusEl.style.color = 'var(--green)';
       pollPipelineStatus();
     } else {
