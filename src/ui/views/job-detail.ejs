@@ -29,7 +29,10 @@
   </div>
   <%
     const statusOrder = ['new', 'extracted', 'scored', 'composed', 'audited', 'applied'];
-    const currentStatusIdx = statusOrder.indexOf(job.status);
+    // audit_failed: audit exhausted retries — treat like 'scored' so Compose shows as
+    // the current stage (clickable with "Re-run") and earlier stages appear done.
+    const effectiveStatus = job.status === 'audit_failed' ? 'scored' : job.status;
+    const currentStatusIdx = statusOrder.indexOf(effectiveStatus);
     const stages = [
       { key: 'new', label: 'Ingest', clickable: false },
       { key: 'extracted', label: 'Extract', clickable: true, step: 'extract', dbBefore: 'new' },
@@ -38,7 +41,10 @@
       { key: 'audited', label: 'Audit', clickable: true, step: 'audit', dbBefore: 'composed' },
       { key: 'applied', label: 'Apply', clickable: false },
     ];
-    const currentIdx = stages.findIndex(s => s.key === job.status);
+    // For audit_failed, highlight Compose as the current stage (needs re-compose with audit feedback)
+    const currentIdx = job.status === 'audit_failed'
+      ? stages.findIndex(s => s.key === 'composed')
+      : stages.findIndex(s => s.key === job.status);
   %>
   <div class="pipeline-steps" style="flex-wrap:wrap;gap:4px;align-items:flex-start">
     <% for (let i = 0; i < stages.length; i++) {

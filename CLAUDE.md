@@ -12,18 +12,18 @@ It optimizes for **quality over quantity** — surfacing the best matches and gi
 
 ## Onboarding: Populating the Profile
 
-When the profile files are empty or contain only placeholders (first run), Claude MUST **interview the user through conversation**. Do NOT ask the user to edit YAML manually — that is Claude's job.
+When the profile is empty or contains only placeholders (first run), Claude MUST **interview the user through conversation**. Do NOT ask the user to edit anything manually — that is Claude's job.
 
 ### How to onboard
 
 1. Tell the user: "Let me set up your JobBot profile. I'll ask you a few questions."
 2. Ask questions section by section (see below).
-3. After each section, write to the YAML file.
+3. After each section, write to the SQLite `user_preferences` table via `profile-store.ts`.
 4. Confirm with the user before moving on.
 
-### Candidate Profile (`local/profile/candidate.yaml`)
+### Candidate Profile (stored in `user_preferences.candidate`, editable at `/profile`)
 
-Ask the user about, then write into the file:
+Ask the user about, then write into the DB:
 
 - Name, email, phone, current location
 - Work history (for each position): company, title, start/end dates, 2-4 bullet-point highlights, technologies used
@@ -33,7 +33,7 @@ Ask the user about, then write into the file:
 
 **Hard rule:** Only write what the user tells you. Never invent or embellish. If the user hasn't mentioned a skill, don't add it. If dates are vague ("around 2020"), keep them vague.
 
-### Preferences (`local/profile/preferences.yaml`)
+### Preferences (stored in `user_preferences.preferences`, editable at `/profile`)
 
 Ask the user about:
 
@@ -45,7 +45,7 @@ Ask the user about:
 
 Tune `weights` based on what matters most to the user. Default: title (0.35), location (0.25), company (0.15), industry (0.20), description quality (0.05).
 
-### Answers (`local/profile/answers.yaml`)
+### Answers (stored in `user_preferences.answers`, editable at `/profile`)
 
 Ask about common application questions:
 
@@ -59,10 +59,10 @@ Set `ask_every_time: true` for anything the user wants to decide per-application
 
 1. **Default to dry-run.** Every application command must default to `--dry-run`. Only `--submit` (explicit) sends the application.
 2. **Never auto-submit.** No scenario where the system submits without explicit user confirmation.
-3. **Never invent data.** Resume tailoring may ONLY reorder, select, or lightly rephrase **true experience** from `local/profile/candidate.yaml`. Never fabricate employers, dates, skills, or claims.
-4. **Respect `ask_every_time`.** If `local/profile/answers.yaml` has `ask_every_time: true`, stop and ask the user.
-5. **Sensitive data stays local.** `local/profile/answers.yaml` is never shared or uploaded.
-6. **AI fills the profile, not the user.** Interview the user and write YAML. Never tell them to manually edit profile files unless they explicitly ask.
+3. **Never invent data.** Resume tailoring may ONLY reorder, select, or lightly rephrase **true experience** from the candidate profile (stored in `user_preferences`). Never fabricate employers, dates, skills, or claims.
+4. **Respect `ask_every_time`.** If the answers profile has `ask_every_time: true`, stop and ask the user.
+5. **Sensitive data stays local.** Profile data (candidate, preferences, answers) is stored in the local SQLite DB and is never shared or uploaded.
+6. **AI fills the profile, not the user.** Interview the user and write to the DB. Never tell them to manually edit the profile unless they explicitly ask. They can review at the `/profile` web UI.
 
 ## Git Discipline
 
@@ -87,15 +87,18 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`.
 ## Architecture
 
 ```
-CLI (src/cli.ts)
-  ├── db/          SQLite via better-sqlite3
-  ├── jobs/        Ingest, detect ATS, score, list
-  ├── resume/      Tailor, render (LaTeX → PDF), validate
-  ├── apply/       Orchestrate applications (future)
+CLI (src/cli.ts → tsx src/cli.ts)
+  ├── db/          SQLite via better-sqlite3 (schema, init, client)
+  ├── jobs/        Pipeline: extract, score, compose (tailor+render), audit, cover-letter
+  │   ├── extractors/   LLM-based job detail extraction (DeepSeek)
+  │   └── scorers/      LLM + deterministic scoring (DeepSeek flash)
+  ├── resume/      LaTeX rendering, template validation
+  ├── ui/          Express web server + EJS views (primary interface)
+  ├── apply/       Application orchestration (future)
   │   └── adapters/  Greenhouse, Lever, Ashby, Stagehand (future)
   ├── email/       Gmail sync + classify (future)
   ├── analytics/   Search reports (future)
-  └── utils/       YAML, logger, paths
+  └── utils/       Profile store, config, logger, AI logger, paths, user context
 ```
 
 ## Key Commands
@@ -103,7 +106,7 @@ CLI (src/cli.ts)
 ```bash
 pnpm jobbot init-db          # Create local/ + initialize SQLite schema
 pnpm jobbot add-url <url>    # Add a job posting (ATS-detected, placeholder row)
-pnpm jobbot score            # Score all jobs against local/profile/preferences.yaml
+pnpm jobbot score            # Score all jobs against preferences (from user_preferences table)
 pnpm jobbot list             # List all jobs
 pnpm jobbot list --tier A    # List tier-A jobs only
 pnpm test                    # Run vitest
@@ -180,14 +183,9 @@ pnpm jobbot apply --job 123 --submit    # Fill AND submit (explicit, requires co
 
 ## Future Commands (Planned)
 
-Implement in this order:
 ```
-pnpm jobbot discover --query "..."    # Search job boards
-pnpm jobbot extract --job 123         # Scrape and parse job posting
-pnpm jobbot tailor --job 123          # Generate tailored resume data
-pnpm jobbot render --job 123          # Render LaTeX → PDF
-pnpm jobbot cover-letter --job 123    # Generate cover letter (LaTeX)
 pnpm jobbot apply --job 123 --dry-run # Fill form, stop before submit
+pnpm jobbot apply --job 123 --submit  # Fill AND submit (explicit, requires confirmation)
 pnpm jobbot sync-email                # Sync Gmail, classify messages
 pnpm jobbot report                    # Analytics dashboard
 ```

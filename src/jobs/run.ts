@@ -185,7 +185,7 @@ export async function runCompose(concurrency?: number, state = getPipelineState(
   const userId = getActiveUserId();
   // Only compose jobs with real scores (exclude score=0 deal-breakers)
   const jobs = db.prepare(
-    "SELECT id FROM jobs WHERE status = 'scored' AND score > 0 AND tier != 'D' AND user_id = ?",
+    "SELECT id FROM jobs WHERE status IN ('scored', 'audit_failed') AND score > 0 AND tier != 'D' AND user_id = ?",
   ).all(userId) as { id: number }[];
 
   if (jobs.length === 0) {
@@ -363,6 +363,7 @@ function jobPipelineStage(db: ReturnType<typeof getDb>, jobId: number): 'extract
   if (job.score === null) return 'score';      // 'extracted' — needs scoring
   if (job.status === 'scored') return 'compose'; // scored but not composed
   if (job.status === 'composed') return 'audit'; // composed but not audited
+  if (job.status === 'audit_failed') return 'compose'; // audit failed — re-compose with feedback
   return 'done';                                // 'audited' or unknown
 }
 
@@ -371,7 +372,7 @@ export async function runAll(state = getPipelineState()): Promise<void> {
   const userId = getActiveUserId();
   // Include 'composed' so we can audit already-composed jobs
   const jobs = db.prepare(
-    "SELECT id FROM jobs WHERE status IN ('new','extracted','scored','composed') AND user_id = ? ORDER BY id",
+    "SELECT id FROM jobs WHERE status IN ('new','extracted','scored','composed','audit_failed') AND user_id = ? ORDER BY id",
   ).all(userId) as { id: number }[];
 
   if (jobs.length === 0) {

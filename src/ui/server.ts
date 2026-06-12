@@ -141,6 +141,7 @@ function statusLabel(status: string): string {
     scored: 'Scored',
     composed: 'Composed',
     audited: 'Audited',
+    audit_failed: 'Audit Failed',
     applied: 'Applied',
     archived: 'Archived',
   };
@@ -227,8 +228,8 @@ app.get('/', (req, res) => {
 
   // Tier counts (per-user, from user_scores)
   const tierCounts = db.prepare(`
-    SELECT tier, COUNT(*) as count FROM user_scores
-    WHERE user_id = ?
+    SELECT tier, COUNT(*) as count FROM jobs
+    WHERE user_id = ? AND tier IS NOT NULL AND score IS NOT NULL
     GROUP BY tier
   `).all(userId) as { tier: string; count: number }[];
 
@@ -245,7 +246,7 @@ app.get('/', (req, res) => {
   const stageCounts = {
     ingested: totalJobs,
     extracted: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE title IS NOT NULL AND user_id = ?').get(userId) as { c: number }).c,
-    scored: (db.prepare('SELECT COUNT(*) as c FROM user_scores WHERE user_id = ?').get(userId) as { c: number }).c,
+    scored: (db.prepare('SELECT COUNT(*) as c FROM jobs WHERE score IS NOT NULL AND user_id = ?').get(userId) as { c: number }).c,
     composed: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status IN ('composed','audited') AND user_id = ?").get(userId) as { c: number }).c,
     audited: (db.prepare("SELECT COUNT(*) as c FROM jobs WHERE status = 'audited' AND user_id = ?").get(userId) as { c: number }).c,
   };
@@ -463,7 +464,7 @@ app.get('/pipeline', (_req, res) => {
   // Step 4 (Score → Compose): only A/B/C tier, exclude D (deal-breakers)
   const composeQueued = db.prepare(
     `SELECT id, title, company FROM jobs
-     WHERE user_id = ? AND status = 'scored' AND score > 0 AND tier != 'D'
+     WHERE user_id = ? AND status IN ('scored', 'audit_failed') AND score > 0 AND tier != 'D'
      ORDER BY id`,
   ).all(userId) as { id: number; title: string | null; company: string | null }[];
   const composeDone = (db.prepare(

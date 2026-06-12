@@ -94,8 +94,7 @@ This repo is designed to be **safe to share on GitHub**. Your personal data live
 
 ```
 local/              ← YOUR personal data (gitignored — NEVER commit)
-  profile/            Your real background, preferences, answers
-  data/               Your SQLite database
+  data/               Your SQLite database (profile, jobs, scores, preferences)
   resumes/            Your generated LaTeX resumes and PDFs
   browser-data/       Your Playwright browser profile
 
@@ -106,15 +105,15 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`. Fill i
 
 ## Philosophy
 
-- **AI-native.** You don't edit YAML by hand. Describe your background, preferences, and deal-breakers to Claude Code — it fills in `local/profile/` for you.
+- **AI-native.** You don't edit anything by hand. Describe your background, preferences, and deal-breakers to Claude Code — it fills in your profile via the DB.
 - **Quality, not quantity.** This is not a mass-apply bot. The goal is to surface the best matches and give each one genuine attention.
 - **Never auto-submit.** Every application command defaults to `--dry-run`. You must explicitly pass `--submit` to finalize.
 - **Never invent data.** Resume tailoring may reorder, select, or lightly rephrase *real* experience — but it will never fabricate employers, dates, skills, or claims.
-- **You are in control.** Sensitive answers live in `local/profile/answers.yaml`. Fields marked `ask_every_time: true` stop the pipeline and ask you each time.
+- **You are in control.** Sensitive answers are stored in your local SQLite DB. Fields marked `ask_every_time: true` stop the pipeline and ask you each time.
 
 ## Creating Your Profile (AI-Native)
 
-You do **not** manually edit YAML files. Instead, open Claude Code in this directory and talk to it. Claude will interview you and write `local/profile/` for you.
+You do **not** manually edit anything. Instead, open Claude Code in this directory and talk to it. Claude will interview you and write your profile to the database for you.
 
 ### Step 1: Open Claude Code
 
@@ -127,22 +126,22 @@ Claude reads `CLAUDE.md` on startup and knows it should interview you.
 
 ### Step 2: Talk to Claude
 
-Tell Claude about yourself. It will ask questions and fill in the files:
+Tell Claude about yourself. It will ask questions and fill in your profile (stored in SQLite `user_preferences` table, viewable at `/profile` in the web UI):
 
-**`local/profile/candidate.yaml`** — Your real background:
+**Candidate Profile** — Your real background:
 - Work history (company, title, dates, highlights, technologies)
 - Education (school, degree, year)
 - Skills (languages, frameworks, infrastructure, databases)
 - Links (GitHub, LinkedIn, website)
 
-**`local/profile/preferences.yaml`** — What you're looking for:
+**Preferences** — What you're looking for:
 - Preferred job titles ("Senior Software Engineer", "Staff Engineer"...)
 - Location (remote? which cities?)
 - Preferred companies and industries
 - Deal-breakers (keywords or industries to reject)
 - Salary expectations
 
-**`local/profile/answers.yaml`** — Sensitive application answers:
+**Answers** — Sensitive application answers:
 - Work authorization, sponsorship
 - Disability, veteran, gender, race status
 - Whether you've applied recently
@@ -152,15 +151,9 @@ Claude sets `ask_every_time: true` for anything that should be decided per-appli
 
 ### Step 3: Review
 
-```bash
-cat local/profile/candidate.yaml
-cat local/profile/preferences.yaml
-cat local/profile/answers.yaml
-```
+Open the web UI at http://localhost:3000/profile to review and edit your profile at any time. Everything Claude writes is based on what you said. Nothing is invented.
 
-Everything Claude writes is based on what you said. Nothing is invented. You can review and tweak at any time.
-
-## Commands (v0.5)
+## Commands
 
 ### Web UI (primary interface)
 
@@ -199,14 +192,16 @@ The web UI provides: dashboard with analytics charts, pipeline management, batch
 
 ## Compiling a Resume
 
+Resumes are compiled automatically by the pipeline. To manually compile:
+
 ```bash
-# General resume
-pdflatex -output-directory local/resumes/output local/resumes/resume-general.tex
+# Compile a specific job's resume
+pdflatex -output-directory local/resumes/54 local/resumes/54/resume.tex
 
 # View
-explorer.exe local/resumes/output/resume-general.pdf   # WSL
-open local/resumes/output/resume-general.pdf            # macOS
-xdg-open local/resumes/output/resume-general.pdf        # Linux
+explorer.exe local/resumes/54/resume.pdf   # WSL
+open local/resumes/54/resume.pdf            # macOS
+xdg-open local/resumes/54/resume.pdf        # Linux
 ```
 
 ## Project Structure
@@ -217,34 +212,31 @@ jobbot/
     setup.sh            One-command setup script
 
   local.example/        Public template (committed to git)
-    profile/              Candidate, preferences, answers templates
     data/                 .gitkeep placeholder
     resumes/              Generated resume versions placeholder
 
   local/                YOUR personal data (gitignored, never committed)
-    profile/              AI-populated: your background, preferences, answers
-    data/                 SQLite database
+    data/                 SQLite database (profile, jobs, scores, preferences)
     resumes/              Generated LaTeX resumes and PDFs
     browser-data/         Playwright persistent browser profile
 
   src/                  TypeScript source (public, committed)
     cli.ts                CLI entry point
     db/                   Database schema, client, init
-    jobs/                 Add, extract, score, list, delete, run
+    jobs/                 Add, extract, score, list, delete, run, audit
     jobs/extractors/      LLM-based job detail extraction (DeepSeek)
     jobs/scorers/         LLM + deterministic job scoring
-    resume/               Tailor, render (LaTeX → PDF), validate
     ui/                   Express web UI server + EJS views
     apply/                Application orchestration + ATS adapters (future)
     email/                Gmail sync and classification (future)
     analytics/            Search reports (future)
-    utils/                YAML, logger, AI logger, paths
+    utils/                Profile store, config, logger, AI logger, paths
 
   resumes/
     master.tex            LaTeX resume template (public)
   prompts/                LLM prompt templates (public)
   tests/                  Vitest tests (public)
-  docs/                   Setup guides (browser, LaTeX, WSL2)
+  docs/                   Setup guides, release notes, WSL2
 ```
 
 ## Roadmap
@@ -255,6 +247,8 @@ jobbot/
 - [x] **v0.3** — Web UI dashboard + pipeline visualization
 - [x] **v0.4** — Pipeline automation, delete, compose (tailor+render), audit, AI logging
 - [x] **v0.5** — Job discovery, batch URL add, market intelligence, dashboard analytics, resume variants, cover letter tones, scheduled runs
+- [x] **v0.6** — Multi-user, committee audit, customize pipeline, interactive UI, profile in DB
+- [x] **v0.7** — Browser automation setup, bug bash, pipeline fixes
 - [ ] **v1.0** — Playwright + Stagehand browser automation (dry-run default)
 - [ ] **v1.5** — Gmail sync and email classification
 - [ ] **v2.0** — Analytics dashboard and search reports
