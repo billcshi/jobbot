@@ -223,6 +223,10 @@
   .task-pool .task-status.done { color: var(--green); }
   .task-pool .task-status.fail { color: var(--red); }
   .task-pool .task-status.cancelled { color: var(--yellow); }
+  .task-row { transition: opacity 0.6s ease-out, max-height 0.6s ease-out; }
+  .task-row.fading { opacity: 0; max-height: 0; overflow: hidden; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .task-row.new-done { animation: fadeIn 0.3s ease-out; }
   .task-pool .task-spinner {
     display: inline-block; width: 10px; height: 10px;
     border: 2px solid currentColor; border-top-color: transparent;
@@ -431,7 +435,8 @@
       <div class="comp comp-output"><div class="comp-title">PDF Output</div><div class="comp-detail">local/resumes/<br>&lt;job-id&gt;-resume.pdf</div></div>
     </div>
     <div class="stage-foot">
-      <strong><%= composeEligible %></strong> eligible (A/B/C only) ·
+      <strong><%= composeEligible %></strong> eligible (A/B only) ·
+      <% if (cSkipped > 0) { %><span class="metric"><span class="dot dot-warn"></span> <strong style="color:var(--yellow)"><%= cSkipped %> C</strong> manual</span><% } %>
       <% if (dSkipped > 0) { %><span class="metric"><span class="dot dot-fail"></span> <strong style="color:var(--red)"><%= dSkipped %> D</strong> skipped</span><% } %>
       <span class="metric"><span class="dot dot-ok"></span> <strong style="color:var(--green)"><%= composeDone %></strong> composed</span>
       <% if (composeQueued.length > 0) { %>
@@ -515,6 +520,9 @@
   const STAGE_NAMES = { extract: 'Extract', score: 'Score', compose: 'Compose', audit: 'Audit' };
   let pollTimer = null;
   let pipelineStart = null;
+  // Track when completed tasks first appeared — hide after DONE_TTL_MS
+  const DONE_TTL_MS = 5000;
+  const doneTaskFirstSeen = new Map(); // key: "stage:jobId" → Date.now()
 
   function toggleQueue(id) {
     const el = document.getElementById(id);
@@ -651,9 +659,12 @@
     const poolDiv = document.getElementById('task-pool');
     const tbody = document.getElementById('task-pool-body');
     const stages = ['extract', 'score', 'compose', 'audit'];
+    const now = Date.now();
 
     // Collect all tasks with status
     const tasks = [];
+    // Track which done tasks are still visible (to detect newly-gone ones for cleanup)
+    const activeDoneKeys = new Set();
     for (const s of stages) {
       const ss = snap.stages[s];
       if (!ss) continue;
@@ -664,9 +675,19 @@
           stage: s, status: 'running', elapsedSec: rd.elapsedSec,
         });
       }
-      // Completed
+      // Completed — only show if first seen < DONE_TTL_MS ago.
+      // Once expired, keep the entry in doneTaskFirstSeen so it never reappears.
       for (const jid of (ss.completed || [])) {
-        tasks.push({ jobId: jid, stage: s, status: 'done' });
+        const key = s + ':' + jid;
+        if (!doneTaskFirstSeen.has(key)) doneTaskFirstSeen.set(key, now);
+        const firstSeen = doneTaskFirstSeen.get(key);
+        if (now - firstSeen < DONE_TTL_MS) {
+          activeDoneKeys.add(key);
+          const age = now - firstSeen;
+          tasks.push({ jobId: jid, stage: s, status: 'done', ageMs: age });
+        }
+        // Else: expired — silently skip, but DON'T delete from doneTaskFirstSeen
+        // so it stays expired even if the server still reports it as completed.
       }
       // Failed
       for (const jid of (ss.failed || [])) {
@@ -676,6 +697,19 @@
       for (const jid of (ss.cancelled || [])) {
         tasks.push({ jobId: jid, stage: s, status: 'cancelled' });
       }
+    }
+    // Collect all completed keys from the server snapshot
+    const serverCompletedKeys = new Set();
+    for (const s of stages) {
+      const ss = snap.stages[s];
+      if (!ss) continue;
+      for (const jid of (ss.completed || [])) serverCompletedKeys.add(s + ':' + jid);
+    }
+    // Only delete entries for tasks that are no longer completed at all
+    // (e.g., the pipeline was restarted and the task was re-queued).
+    // Expired entries stay in the map so they never reappear.
+    for (const key of doneTaskFirstSeen.keys()) {
+      if (!serverCompletedKeys.has(key)) doneTaskFirstSeen.delete(key);
     }
 
     if (tasks.length === 0) {
@@ -711,7 +745,14 @@
         ? '<button class="btn-task-cancel" onclick="cancelTask(' + t.jobId + ')">Cancel</button>'
         : '';
 
-      rows += '<tr>';
+      // Animation: new done tasks get a fade-in, expiring ones get a fade-out
+      let rowClass = '';
+      if (t.status === 'done' && t.ageMs !== undefined) {
+        if (t.ageMs < 300) rowClass = ' new-done';
+        if (t.ageMs > DONE_TTL_MS - 1000) rowClass = ' fading';
+      }
+
+      rows += '<tr class="task-row' + rowClass + '">';
       rows += '<td style="font-variant-numeric:tabular-nums;font-weight:600">#' + t.jobId + '</td>';
       rows += '<td>' + stageBadge + '</td>';
       rows += '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</td>';

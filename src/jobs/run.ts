@@ -183,9 +183,9 @@ export async function runCompose(concurrency?: number, state = getPipelineState(
   const limit = concurrency ?? getStageConcurrency('compose');
   const db = getDb();
   const userId = getActiveUserId();
-  // Only compose jobs with real scores (exclude score=0 deal-breakers)
+  // Only compose A/B tier jobs (C requires manual action, D = deal-breakers)
   const jobs = db.prepare(
-    "SELECT id FROM jobs WHERE status IN ('scored', 'audit_failed') AND score > 0 AND tier != 'D' AND user_id = ?",
+    "SELECT id FROM jobs WHERE status IN ('scored', 'audit_failed') AND score > 0 AND tier IN ('A', 'B') AND user_id = ?",
   ).all(userId) as { id: number }[];
 
   if (jobs.length === 0) {
@@ -551,9 +551,9 @@ export async function runAll(state = getPipelineState()): Promise<void> {
 
       if (!statusRow) { skipped++; return 'skip'; }
 
-      // Skip deal-breakers
-      if (statusRow.score === 0 || statusRow.tier === 'D') {
-        if (attempt === 0) console.log(`  - #${jobId} compose: skipped (tier D, deal-breaker)`);
+      // Skip deal-breakers and C-tier (manual action required)
+      if (statusRow.score === 0 || statusRow.tier === 'D' || statusRow.tier === 'C') {
+        if (attempt === 0) console.log(`  - #${jobId} compose: skipped (tier ${statusRow.tier}, requires manual action)`);
         break;
       }
 

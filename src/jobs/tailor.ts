@@ -233,6 +233,27 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     return { success: false, jobId, error: 'LLM returned incomplete tailor data (missing summary or experience)' };
   }
 
+  // Enforce reverse-chronological order (most recent first).
+  // The LLM sometimes reorders by relevance; this guarantees correct date order.
+  llmOutput.selected_experience.sort((a, b) => {
+    const dateVal = (dateStr: string | undefined): number => {
+      if (!dateStr) return 0;
+      const s = dateStr.trim().toLowerCase();
+      if (s === 'present') return Infinity; // current job → always first
+      // Parse "Month YYYY" or "YYYY" into a comparable number
+      const months: Record<string, number> = {
+        january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+        july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+      };
+      const m = s.match(/([a-z]+)\s+(\d{4})/i);
+      if (m) return (parseInt(m[2]!, 10) * 100) + (months[m[1]!.toLowerCase()] || 0);
+      const y = s.match(/(\d{4})/);
+      if (y) return parseInt(y[1]!, 10) * 100;
+      return 0;
+    };
+    return dateVal(b.start) - dateVal(a.start);
+  });
+
   // Serialize to YAML for storage
   const versionName = `tailored-v1-${Date.now()}`;
   const yaml = await import('js-yaml');

@@ -21,6 +21,7 @@ You are a resume quality auditor. Review a composed resume against a job descrip
 
 ### Formatting & Structure
 - Are sections in the right order (Summary → Experience → Education → Skills)?
+- **Is work experience reverse-chronological (most recent first)? Wrong order is a critical error — deduct 20 points.**
 - Are there any obvious LaTeX rendering artifacts in the text?
 - Is the contact information complete and correct?
 

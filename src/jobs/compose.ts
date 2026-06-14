@@ -131,8 +131,8 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
 
   // Extract visual issues from audit.json for LaTeX template fixing.
   // Content issues go to tailor (YAML changes); visual issues go to render (LaTeX changes).
-  // Only when fixLatex is not explicitly disabled (defaults to true for audit retry compat).
-  const fixLatex = opts?.fixLatex !== false;
+  // Only when fixLatex is explicitly enabled (opt-in, via "Re-compose with TeX Fix" button).
+  const fixLatex = opts?.fixLatex === true;
   let visualFeedback: string[] | undefined;
   const auditJsonPath = `${jobResumeDir(jobId)}/audit.json`;
   if (fixLatex && auditFeedback && existsSync(auditJsonPath)) {

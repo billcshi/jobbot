@@ -127,6 +127,8 @@ Jobs are scored 0.0–1.0 against preferences. Dimensions (configurable via `wei
 
 Tier thresholds: **A** ≥ 0.80, **B** ≥ 0.65, **C** ≥ 0.50, **D** < 0.50.
 
+**Pipeline gating:** The automatic pipeline only processes A and B tier jobs. C-tier jobs remain in `scored` status and require manual action (click "▶ Resume" on the job detail page). D-tier jobs (deal-breakers) are skipped entirely.
+
 Deal-breakers (e.g., crypto/web3 keywords) force score = 0 and tier = D.
 
 ## ATS Detection (src/jobs/detect-ats.ts)
@@ -145,8 +147,8 @@ Deal-breakers (e.g., crypto/web3 keywords) force score = 0 and tier = D.
 Resumes and cover letters are written in **LaTeX** and compiled to PDF with `pdflatex`.
 
 - Template: `resumes/master.tex` — uses `{{placeholders}}` that the CLI injects with real data.
-- Generated files go to `local/resumes/` (gitignored).
-- Compile: `pdflatex -output-directory=local/resumes local/resumes/resume-123.tex`
+- Generated files go to `local/resumes/<jobId>/` (gitignored, per-job directories).
+- Compile: `pdflatex -output-directory=local/resumes/54 local/resumes/54/resume.tex`
 
 LaTeX must be installed on the system:
 ```bash
@@ -154,6 +156,26 @@ sudo apt update && sudo apt install -y \
   texlive-latex-base texlive-latex-recommended \
   texlive-latex-extra texlive-fonts-recommended
 ```
+
+### Experience Ordering
+
+Work experience MUST be reverse-chronological (most recent first). Three layers enforce this:
+
+1. **Prompt** (`tailor-resume.md`) — explicit instruction
+2. **Code** (`tailor.ts`) — deterministic sort by start date after LLM returns
+3. **Audit** (`audit-format.md`) — format reviewer deducts 20 points for wrong order
+
+### Audit Committee
+
+Three independent reviewers score each resume, with weighted averaging:
+
+| Reviewer | Weight | Focus |
+|---|---|---|
+| ATS Screener | 30% | Keyword match, ATS readability, requirements alignment |
+| Hiring Manager | 40% | Experience quality, impact quantification, narrative |
+| Format Reviewer | 30% | 1-page check, structure, experience order, consistency |
+
+Content audit + visual audit (Claude Vision / GPT-5.5). Overall = content × 0.6 + visual × 0.4. PASS threshold: 70/100. Max 3 retries per compose→audit loop.
 
 ## Environment: WSL2
 
@@ -181,11 +203,18 @@ pnpm jobbot apply --job 123 --dry-run   # Fill form, stop before submit
 pnpm jobbot apply --job 123 --submit    # Fill AND submit (explicit, requires confirmation)
 ```
 
-## Future Commands (Planned)
+## Upcoming: v0.8 Browser Automation
 
 ```
-pnpm jobbot apply --job 123 --dry-run # Fill form, stop before submit
-pnpm jobbot apply --job 123 --submit  # Fill AND submit (explicit, requires confirmation)
+pnpm jobbot apply --job 123 --dry-run # Fill form, screenshot, STOP before submit
+pnpm jobbot apply --job 123 --submit  # Fill AND submit (explicit confirmation required)
+```
+
+ATS adapters planned: Greenhouse, Lever, Ashby, Workday, LinkedIn Easy Apply, generic.
+
+## Future Commands (Later)
+
+```
 pnpm jobbot sync-email                # Sync Gmail, classify messages
 pnpm jobbot report                    # Analytics dashboard
 ```

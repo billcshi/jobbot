@@ -19,13 +19,34 @@
 <div class="card" style="margin-bottom:20px">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
     <h2 style="margin:0">Pipeline Progress</h2>
-    <% const needsPipeline = job.status !== 'audited' && job.status !== 'applied'; %>
-    <button class="btn-run-pipeline" id="btn-run-pipeline"
-            onclick="runFullPipeline()"
-            <%= needsPipeline ? '' : 'disabled style="opacity:0.4;cursor:default"' %>
-            title="<%= needsPipeline ? 'Run the full pipeline for this job' : 'Pipeline complete' %>">
-      <%= job.status === 'new' ? '▶ Run Pipeline' : (needsPipeline ? '▶ Resume Pipeline' : '✓ Pipeline Complete') %>
-    </button>
+    <%
+      const needsPipeline = job.status !== 'audited' && job.status !== 'applied';
+      // Determine the next stage to run for "Resume":
+      //   new → extract, extracted → score, scored → compose, composed → audit
+      //   audit_failed → compose (needs re-compose with audit feedback)
+      const _effStatus = job.status === 'audit_failed' ? 'scored' : job.status;
+      const statusToStage = {
+        new: 'extract', extracted: 'score', scored: 'compose',
+        composed: 'audit', audit_failed: 'compose',
+      };
+      const resumeStage = statusToStage[job.status] || 'extract';
+    %>
+    <% if (needsPipeline) { %>
+      <div style="display:flex;gap:8px">
+        <button class="btn-run-pipeline" id="btn-resume-pipeline"
+                onclick="resumePipeline()"
+                title="Continue pipeline from current stage (<%= resumeStage %>)">
+          ▶ Resume
+        </button>
+        <button class="btn-restart-pipeline" id="btn-restart-pipeline"
+                onclick="restartPipeline()"
+                title="Restart pipeline from scratch (extract → score → compose → audit)">
+          ↻ Restart
+        </button>
+      </div>
+    <% } else { %>
+      <span style="color:var(--green);font-size:13px;font-weight:600">✓ Pipeline Complete</span>
+    <% } %>
   </div>
   <%
     const statusOrder = ['new', 'extracted', 'scored', 'composed', 'audited', 'applied'];
@@ -251,7 +272,7 @@
   <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
     <% if (resumeVersion && resumeVersion.pdf_path) { %>
       <div>
-        <a href="<%= '/resumes/' + job.id + '/resume.pdf' %>" class="btn-link" download>📥 Download Resume PDF</a>
+        <a href="<%= '/resumes/' + job.id + '/resume.pdf' %>" class="btn-link" download="<%= resumeDownloadName %>">📥 Download Resume PDF</a>
         <p style="font-size:11px;color:var(--text-dim);margin-top:4px"><%= resumeVersion.pdf_path %></p>
       </div>
     <% } else { %>
@@ -260,7 +281,7 @@
 
     <% if (hasCoverLetter) { %>
       <div>
-        <a href="<%= '/resumes/' + job.id + '/cover-letter.pdf' %>" class="btn-link" download>📥 Download Cover Letter</a>
+        <a href="<%= '/resumes/' + job.id + '/cover-letter.pdf' %>" class="btn-link" download="<%= clDownloadName %>">📥 Download Cover Letter</a>
       </div>
     <% } %>
 
@@ -445,6 +466,14 @@
 }
 .btn-run-pipeline:hover { filter: brightness(1.1); }
 .btn-run-pipeline:disabled { background: var(--border); color: var(--text-dim); cursor: default; }
+.btn-restart-pipeline {
+  background: transparent; color: var(--text-dim);
+  border: 1px solid var(--border); padding: 6px 16px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; font-weight: 500;
+  white-space: nowrap; transition: all 0.15s;
+}
+.btn-restart-pipeline:hover { border-color: var(--accent); color: var(--text); }
+.btn-restart-pipeline:disabled { opacity: 0.4; cursor: default; }
 
 /* Clickable pipeline stages */
 button.pipeline-step {
@@ -534,7 +563,7 @@ async function generateCoverLetter() {
     });
     const data = await resp.json();
     if (data.ok) {
-      status.innerHTML = '✓ <a href="/resumes/<%= job.id %>/cover-letter.pdf?' + Date.now() + '" style="color:var(--accent)" download>Download</a>';
+      status.innerHTML = '✓ <a href="/resumes/<%= job.id %>/cover-letter.pdf?' + Date.now() + '" style="color:var(--accent)" download="<%= clDownloadName %>">Download</a>';
       status.style.color = 'var(--green)';
       btn.textContent = '🔄 Regenerate';
     } else {
@@ -631,10 +660,9 @@ function hidePopover() {
 
 async function runFromStage(stage) {
   const statusEl = document.getElementById('run-from-status');
-  const btn = document.getElementById('btn-run-pipeline');
   statusEl.textContent = '⏳ Starting pipeline...';
   statusEl.style.color = 'var(--yellow)';
-  if (btn) btn.disabled = true;
+  disableButtons();
 
   try {
     const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
@@ -650,54 +678,61 @@ async function runFromStage(stage) {
     } else {
       statusEl.textContent = '✕ ' + (data.error || 'Failed');
       statusEl.style.color = 'var(--red)';
-      if (btn) btn.disabled = false;
+      enableButtons();
     }
   } catch (err) {
     statusEl.textContent = '✕ ' + err.message;
     statusEl.style.color = 'var(--red)';
-    if (btn) btn.disabled = false;
+    enableButtons();
   }
 }
 
-async function runFullPipeline() {
-  if (!confirm('Run the full pipeline for this job? This will execute extract → score → compose → audit.')) return;
-  const statusEl = document.getElementById('run-from-status');
-  const btn = document.getElementById('btn-run-pipeline');
-  statusEl.textContent = '⏳ Starting pipeline...';
-  statusEl.style.color = 'var(--yellow)';
-  if (btn) btn.disabled = true;
+// Map job status to next pipeline stage for Resume
+const RESUME_STAGE = '<%= resumeStage %>';
 
-  try {
-    const resp = await fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId: <%= job.id %> }),
-    });
-    const data = await resp.json();
-    if (data.ok) {
-      statusEl.textContent = '✓ Pipeline started — polling...';
-      statusEl.style.color = 'var(--green)';
-      pollPipelineStatus();
-    } else {
-      statusEl.textContent = '✕ ' + (data.error || 'Failed');
-      statusEl.style.color = 'var(--red)';
-      if (btn) btn.disabled = false;
-    }
-  } catch (err) {
-    statusEl.textContent = '✕ ' + err.message;
-    statusEl.style.color = 'var(--red)';
-    if (btn) btn.disabled = false;
-  }
+async function resumePipeline() {
+  const stage = RESUME_STAGE;
+  const stageLabels = { extract: 'Extract', score: 'Score', compose: 'Compose', audit: 'Audit' };
+  const label = stageLabels[stage] || stage;
+  if (!confirm(`Resume pipeline from "${label}"? This skips already-completed stages and continues from ${label.toLowerCase()}.`)) return;
+
+  disableButtons();
+  runFromStage(stage);
+}
+
+async function restartPipeline() {
+  if (!confirm('Restart pipeline from scratch? This will re-extract, re-score, re-compose, and re-audit the job.\n\nAll existing results (resume PDF, cover letter, audit) will be regenerated.')) return;
+
+  disableButtons();
+  runFromStage('extract');
+}
+
+function disableButtons() {
+  const resumeBtn = document.getElementById('btn-resume-pipeline');
+  const restartBtn = document.getElementById('btn-restart-pipeline');
+  if (resumeBtn) resumeBtn.disabled = true;
+  if (restartBtn) restartBtn.disabled = true;
+}
+
+function enableButtons() {
+  const resumeBtn = document.getElementById('btn-resume-pipeline');
+  const restartBtn = document.getElementById('btn-restart-pipeline');
+  if (resumeBtn) resumeBtn.disabled = false;
+  if (restartBtn) restartBtn.disabled = false;
+}
+
+// Keep for backward compat — redirects to resume
+async function runFullPipeline() {
+  resumePipeline();
 }
 
 async function recomposeWithAudit(fixLatex) {
   const label = fixLatex ? 'with TeX layout fixes' : 'content only';
   if (!confirm(`Re-compose ${label} and re-audit? This will regenerate the resume${fixLatex ? ' and fix LaTeX layout issues' : ''} using the latest audit suggestions, then audit the result.`)) return;
   const statusEl = document.getElementById('run-from-status');
-  const btn = document.getElementById('btn-run-pipeline');
   statusEl.textContent = '⏳ Re-composing ' + label + '...';
   statusEl.style.color = 'var(--yellow)';
-  if (btn) btn.disabled = true;
+  disableButtons();
 
   try {
     const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
@@ -713,12 +748,12 @@ async function recomposeWithAudit(fixLatex) {
     } else {
       statusEl.textContent = '✕ ' + (data.error || 'Failed');
       statusEl.style.color = 'var(--red)';
-      if (btn) btn.disabled = false;
+      enableButtons();
     }
   } catch (err) {
     statusEl.textContent = '✕ ' + err.message;
     statusEl.style.color = 'var(--red)';
-    if (btn) btn.disabled = false;
+    enableButtons();
   }
 }
 

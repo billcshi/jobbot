@@ -248,13 +248,14 @@ jobbot/
 - [x] **v0.4** — Pipeline automation, delete, compose (tailor+render), audit, AI logging
 - [x] **v0.5** — Job discovery, batch URL add, market intelligence, dashboard analytics, resume variants, cover letter tones, scheduled runs
 - [x] **v0.6** — Multi-user, committee audit, customize pipeline, interactive UI, profile in DB
-- [x] **v0.7** — Browser automation setup, bug bash, pipeline fixes
-- [ ] **v1.0** — Playwright + Stagehand browser automation (dry-run default)
+- [x] **v0.7** — Bug bash, pipeline polish, visual audit, experience ordering, tier gating
+- [ ] **v0.8** — Playwright browser automation (Greenhouse, Lever, Ashby, Workday, LinkedIn)
+- [ ] **v1.0** — Stagehand AI-driven form filling for ambiguous ATS forms
 - [ ] **v1.5** — Gmail sync and email classification
 - [ ] **v2.0** — Analytics dashboard and search reports
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro) · OpenAI GPT-5.5 (vision) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (future) · Stagehand (future)
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro/v4-flash) · OpenAI GPT-5.5 (vision) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (v0.8) · Stagehand (v1.0)
 
 Designed for use with **Claude Code** and other AI coding agents on **WSL2**.

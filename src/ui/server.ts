@@ -18,6 +18,7 @@ import { addUrl } from '../jobs/add-url.js';
 import { extractSalaryRanges } from '../jobs/market-data.js';
 import { PROJECT_ROOT, LOCAL_DIR, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
 import { readCandidate, readPreferences, readAnswers, writeProfile } from '../utils/profile-store.js';
+import { parseYaml } from '../utils/yaml.js';
 import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
@@ -175,7 +176,7 @@ app.get('/', (req, res) => {
   const params: unknown[] = [];
 
   if (tierFilter && ['A', 'B', 'C', 'D'].includes(tierFilter)) {
-    conditions.push('us.tier = ?');
+    conditions.push('COALESCE(us.tier, j.tier) = ?');
     params.push(tierFilter);
   }
   if (statusFilter && ['new', 'extracted', 'scored', 'composed', 'audited', 'applied', 'archived'].includes(statusFilter)) {
@@ -213,7 +214,7 @@ app.get('/', (req, res) => {
       break;
     case 'score':
     default:
-      orderBy = 'COALESCE(us.score, -1) DESC, j.id ASC';
+      orderBy = 'COALESCE(us.score, j.score, -1) DESC, j.id ASC';
       break;
   }
 
@@ -225,6 +226,21 @@ app.get('/', (req, res) => {
     ORDER BY ${orderBy}
   `;
   const jobs = db.prepare(query).all(userId, ...params) as (JobRow & { user_score: number | null; user_tier: string | null; user_score_reason: string | null })[];
+
+  // Post-process: derive consistent tier from display score.
+  // LLM can return tier/score mismatches, and legacy jobs may only have jobs.score.
+  // Canonical thresholds: A ≥ 0.80, B ≥ 0.65, C ≥ 0.50, D < 0.50.
+  function deriveTier(score: number): string {
+    if (score >= 0.80) return 'A';
+    if (score >= 0.65) return 'B';
+    if (score >= 0.50) return 'C';
+    return 'D';
+  }
+  const enrichedJobs = jobs.map(job => {
+    const displayScore = job.user_score ?? job.score;
+    const displayTier = displayScore != null ? deriveTier(displayScore) : (job.user_tier || job.tier || null);
+    return { ...job, _displayScore: displayScore, _displayTier: displayTier };
+  });
 
   // Tier counts (per-user, from user_scores)
   const tierCounts = db.prepare(`
@@ -265,7 +281,7 @@ app.get('/', (req, res) => {
 
   res.render('dashboard', {
     title: 'Dashboard',
-    jobs,
+    jobs: enrichedJobs,
     counts,
     totalJobs,
     appliedCount,
@@ -320,10 +336,35 @@ app.get('/jobs/:id', (req, res) => {
     ? displayReason.split(/(?<=\.)\s+(?=[A-Z])/).filter(Boolean)
     : [];
 
-  // Load stage outputs for interactive pipeline
-  const resumeVersion = db.prepare(
-    'SELECT pdf_path FROM resume_versions WHERE job_id = ? AND pdf_path IS NOT NULL ORDER BY created_at DESC LIMIT 1',
-  ).get(jobId) as { pdf_path: string | null } | undefined;
+  // Load stage outputs for interactive pipeline.
+  // Verify the PDF file actually exists on disk — the DB record may be stale
+  // if files were cleaned up or pdflatex failed silently.
+  const resumeVersionRow = db.prepare(
+    "SELECT id, pdf_path, version_name, created_at FROM resume_versions WHERE job_id = ? AND pdf_path IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+  ).get(jobId) as { id: number | null; pdf_path: string | null; version_name: string | null; created_at: string | null } | undefined;
+  const resumeVersion = resumeVersionRow?.pdf_path && existsSync(resumeVersionRow.pdf_path)
+    ? resumeVersionRow
+    : undefined;
+
+  // Clean up stale pdf_path entries where the file no longer exists on disk
+  if (resumeVersionRow?.pdf_path && !resumeVersion) {
+    db.prepare("UPDATE resume_versions SET pdf_path = NULL WHERE id = ?").run(resumeVersionRow.id);
+  }
+
+  // Build descriptive download filenames: {FirstName}{LastName}_{Company}_{YYYY-MM-DD}_v{ver}.pdf
+  let resumeDownloadName = 'resume.pdf';
+  let clDownloadName = 'cover-letter.pdf';
+  try {
+    const candidate = parseYaml<{ name?: { first?: string; last?: string } }>(readCandidate(userId));
+    const fullName = [candidate.name?.first, candidate.name?.last].filter(Boolean).join('');
+    const company = (job.company || 'Unknown').replace(/[^a-zA-Z0-9.-]/g, '');
+    const date = (resumeVersion?.created_at || job.discovered_at || '').slice(0, 10); // YYYY-MM-DD
+    const ver = resumeVersion?.id ? `v${resumeVersion.id}` : 'v1';
+    const safeName = fullName || 'Candidate';
+    const stem = [safeName, company, date, ver].filter(Boolean).join('_');
+    resumeDownloadName = `${stem}.pdf`;
+    clDownloadName = `CoverLetter_${safeName}_${company}_${date}.pdf`;
+  } catch { /* keep defaults */ }
 
   // Check for existing cover letter
   const clPdfPath = `${jobResumeDir(jobId)}/cover-letter.pdf`;
@@ -408,6 +449,8 @@ app.get('/jobs/:id', (req, res) => {
     reasonParagraphs,
     events,
     resumeVersion,
+    resumeDownloadName,
+    clDownloadName,
     auditData,
     hasCoverLetter,
     clPdfPath,
@@ -461,10 +504,10 @@ app.get('/pipeline', (_req, res) => {
     'SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND score IS NOT NULL',
   ).get(userId) as { count: number }).count;
 
-  // Step 4 (Score → Compose): only A/B/C tier, exclude D (deal-breakers)
+  // Step 4 (Score → Compose): only A/B tier (C requires manual action, D = deal-breakers)
   const composeQueued = db.prepare(
     `SELECT id, title, company FROM jobs
-     WHERE user_id = ? AND status IN ('scored', 'audit_failed') AND score > 0 AND tier != 'D'
+     WHERE user_id = ? AND status IN ('scored', 'audit_failed') AND score > 0 AND tier IN ('A', 'B')
      ORDER BY id`,
   ).all(userId) as { id: number; title: string | null; company: string | null }[];
   const composeDone = (db.prepare(
@@ -473,6 +516,9 @@ app.get('/pipeline', (_req, res) => {
   const composeEligible = composeDone + composeQueued.length;
   const dSkipped = (db.prepare(
     `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND status = 'scored' AND tier = 'D'`,
+  ).get(userId) as { count: number }).count;
+  const cSkipped = (db.prepare(
+    `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND status = 'scored' AND tier = 'C'`,
   ).get(userId) as { count: number }).count;
 
   // Step 5 (Compose → Audit): queued = composed but not audited
@@ -517,6 +563,7 @@ app.get('/pipeline', (_req, res) => {
     composeDone,
     composeEligible,
     dSkipped,
+    cSkipped,
     // Step 5
     auditQueued,
     auditDone,
@@ -858,6 +905,11 @@ app.post('/api/run', async (req, res) => {
 
       const { runExtract, runScore, runCompose, runAudit, runJob, runAll } = await import('../jobs/run.js');
 
+      // Start the pipeline tracker so the web UI sees running=true.
+      // runAll()/runJob() call startPipeline() internally, but the per-stage
+      // runners don't — startPipeline() is idempotent so double-call is safe.
+      state.startPipeline();
+
       if (jobId) {
         await runJob(jobId, state);
       } else if (step === 'extract') {
@@ -874,6 +926,10 @@ app.post('/api/run', async (req, res) => {
       }
     } catch (err) {
       logger.error('Pipeline run failed', err);
+    } finally {
+      // Ensure the pipeline is marked finished even on error.
+      // runAll()/runJob() call finishPipeline() internally — idempotent.
+      state.finishPipeline();
     }
   })();
 });
@@ -1296,11 +1352,8 @@ app.post('/api/jobs/:id/run-from', async (req, res) => {
       if (startIdx <= 2) {
         const jobRow = getJob();
         if (!jobRow) { pipelineState.finishPipeline(); return; }
-        if (jobRow.score === 0 || jobRow.tier === 'D') {
-          console.log(`  - run-from #${jobId} compose: skipped (tier D, deal-breaker)`);
-          pipelineState.finishPipeline();
-          return;
-        }
+        // Note: no tier gate here — this is a manual user action.
+        // The automatic pipeline filters tiers; manual re-compose should always work.
 
         const meta = { title: jobRow.title ?? undefined, company: jobRow.company ?? undefined };
 

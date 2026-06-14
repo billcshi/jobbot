@@ -143,12 +143,10 @@
     </thead>
     <tbody>
       <% for (const job of jobs) { %>
-        <% const displayScore = job.user_score != null ? job.user_score : job.score; %>
-        <% const displayTier = job.user_tier || job.tier; %>
         <tr class="clickable" onclick="location.href='/jobs/<%= job.id %>'">
           <td><%= job.id %></td>
-          <td><span class="badge <%= helpers.tierClass(displayTier) %>"><%= helpers.tierLabel(displayTier) %></span></td>
-          <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(displayScore) %></td>
+          <td><span class="badge <%= helpers.tierClass(job._displayTier) %>"><%= helpers.tierLabel(job._displayTier) %></span></td>
+          <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(job._displayScore) %></td>
           <td><%= helpers.truncate(job.company, 25) %></td>
           <td style="max-width:250px"><%= helpers.truncate(job.title, 40) %></td>
           <td><%= job.ats_type %></td>
