@@ -20,7 +20,9 @@ api_keys:
                      # Optional — visual audit falls back to OpenAI if Anthropic not set
                      # Env fallback: OPENAI_API_KEY
 
-# DeepSeek model to use for all LLM calls.
+# DeepSeek model used for extraction, tailoring, cover letters, content audits,
+# profile editing, and semantic truth checks. Job scoring always uses
+# deepseek-v4-flash; visual audits use Claude with an OpenAI fallback.
 # Default: deepseek-v4-pro (best quality)
 # Options: deepseek-v4-pro, deepseek-v4-flash
 # Note: deepseek-chat and deepseek-reasoner will be deprecated 2026/07/24

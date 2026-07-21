@@ -11,7 +11,7 @@ pnpm jobbot ui
 # Open http://localhost:3000
 ```
 
-The web UI provides dashboard analytics, pipeline management, batch URL adding, job board discovery, local candidate-profile editing, AI-assisted preference editing, truth-validated cover letter generation, AI call logging, and more. CLI commands are available for scripting and automation.
+The web UI provides dashboard analytics, pipeline management, batch URL adding, job board discovery, review-first AI editing for candidate details and preferences, truth-validated cover letter generation, AI call logging, and more. CLI commands are available for scripting and automation.
 
 ## Quick Setup
 
@@ -125,7 +125,9 @@ Tell Claude about yourself. It will ask questions and create immutable profile r
 
 ### Step 3: Review
 
-Open the web UI at http://localhost:3000/profile to review and edit your profile at any time. Everything Claude writes is based on what you said. Nothing is invented.
+Open the web UI at http://localhost:3000/profile to review and edit your profile at any time. AI drafts must stay within facts you supplied; review them before saving.
+
+Both profile sections support **Edit with AI**. Candidate edits are drafts only: review the diff, move the draft to the manual editor, verify every fact, and save explicitly. Saving creates a new immutable profile revision; the AI endpoint never saves a candidate draft directly.
 
 ## Commands
 
@@ -135,7 +137,7 @@ Open the web UI at http://localhost:3000/profile to review and edit your profile
 |---|---|
 | `pnpm jobbot ui` | **Start web dashboard** at http://localhost:3000 |
 
-The web UI provides: dashboard with analytics charts, pipeline management, batch URL adding, job board discovery, job detail with salary/skills display and interactive pipeline tracker, local candidate-profile editing, AI-assisted preference editing, truth-validated cover letter generation, AI call logging, and event timeline.
+The web UI provides: dashboard with analytics charts, pipeline management, batch URL adding, job board discovery, job detail with salary/skills display and interactive pipeline tracker, review-first AI editing for candidate details and preferences, truth-validated cover letter generation, AI call logging, and event timeline.
 
 ### CLI Commands
 

@@ -856,10 +856,10 @@ const PROFILE_LABELS: Record<string, { label: string; description: string }> = {
 };
 
 type ProfileFile = 'candidate' | 'preferences';
-type AiEditableProfileFile = 'preferences';
+type AiEditableProfileFile = ProfileFile;
 
 export function profileAllowsExternalAiEdit(file: ProfileFile): file is AiEditableProfileFile {
-  return file === 'preferences';
+  return file === 'candidate' || file === 'preferences';
 }
 
 /** Read a profile section from the database for a given user. */
@@ -949,17 +949,37 @@ app.put('/api/profile/:file', (req, res) => {
  * mean, or how to make content more professional. This version gives the model
  * concrete writing guidance tuned to each profile section.
  */
-function buildProfileEditPrompt(file: AiEditableProfileFile): string {
+export function buildProfileEditPrompt(file: AiEditableProfileFile): string {
   const base = [
-    'You are editing a JobBot profile file. Return ONLY the complete updated YAML.',
+    'You are proposing an edit to a JobBot profile file. Return ONLY the complete updated YAML.',
     'Keep everything that was not mentioned exactly as-is — structure, indentation, comments, and unrelated sections.',
     'Do NOT add commentary. Do NOT wrap in markdown code fences. Just the raw YAML.',
-    'If the instruction is unclear, make your best guess and note it in a `# NOTE:` comment.',
   ];
+
+  if (file === 'candidate') {
+    return [
+      ...base,
+      '',
+      '## Hard truth rules',
+      '- The current candidate profile and the user instruction are the only allowed factual sources.',
+      '- NEVER invent, infer, embellish, or assume experience, skills, education, dates, metrics, employers, titles, responsibilities, contact details, or links.',
+      '- Add a new fact only when the user explicitly states that fact in the instruction.',
+      '- When rewording, preserve the exact meaning, scope, seniority, dates, technologies, and numeric claims of the original.',
+      '- If the instruction is ambiguous or needs missing facts, leave that content unchanged. Do not guess and do not add a NOTE that presents speculation as fact.',
+      '- Do not remove factual content unless the user explicitly asks for its removal.',
+      '',
+      '## Editing guidance',
+      '- Improve clarity, grammar, concision, and professional wording only within the factual limits above.',
+      '- Preserve the existing YAML schema and list/object shapes.',
+      '- Preserve stable IDs and source fields exactly unless the user explicitly asks to correct one.',
+      '- Keep dates and numbers verbatim unless the user explicitly provides replacements.',
+    ].join('\n');
+  }
 
   if (file === 'preferences') {
     return [
       ...base,
+      'If the instruction is unclear, make your best guess and note it in a `# NOTE:` comment.',
       '',
       '## What this file is',
       'This is the scoring preferences file. It controls how jobs are scored and ranked against the candidate\'s criteria.',
@@ -991,13 +1011,6 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   const file = req.params.file as ProfileFile;
   if (!(file in PROFILE_LABELS)) {
     res.status(400).json({ error: 'Invalid profile file' });
-    return;
-  }
-
-  if (!profileAllowsExternalAiEdit(file)) {
-    res.status(403).json({
-      error: 'AI editing is disabled for candidate evidence. Record candidate facts through the local interview or manual confirmation flow.',
-    });
     return;
   }
 
@@ -1036,7 +1049,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
         instruction,
       ].join('\n') },
     ],
-    max_tokens: 4096,
+    max_tokens: file === 'candidate' ? 16384 : 8192,
   };
 
   const startMs = Date.now();
@@ -1075,6 +1088,10 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
     };
     const content = data.choices[0]?.message?.content || '';
     const cleaned = content.replace(/^```ya?ml\s*\n?/, '').replace(/\n?```\s*$/, '');
+    const parsed = parseYaml<unknown>(cleaned);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`AI returned invalid ${file} YAML: expected an object at the document root`);
+    }
     const usage = extractUsage(data as Record<string, unknown>);
 
     logAiCall({

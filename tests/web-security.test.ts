@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isTrustedMutationRequest, profileAllowsExternalAiEdit } from '../src/ui/server';
+import {
+  buildProfileEditPrompt,
+  isTrustedMutationRequest,
+  profileAllowsExternalAiEdit,
+} from '../src/ui/server';
 
 describe('web mutation security', () => {
   it('accepts a localhost same-origin browser mutation', () => {
@@ -28,8 +32,15 @@ describe('web mutation security', () => {
     expect(isTrustedMutationRequest({ method: 'GET' })).toBe(true);
   });
 
-  it('only allows external AI editing for preferences', () => {
-    expect(profileAllowsExternalAiEdit('candidate')).toBe(false);
+  it('allows review-first AI editing for both profile sections', () => {
+    expect(profileAllowsExternalAiEdit('candidate')).toBe(true);
     expect(profileAllowsExternalAiEdit('preferences')).toBe(true);
+  });
+
+  it('uses fail-closed truth instructions for candidate AI drafts', () => {
+    const prompt = buildProfileEditPrompt('candidate');
+    expect(prompt).toContain('NEVER invent, infer, embellish, or assume');
+    expect(prompt).toContain('If the instruction is ambiguous or needs missing facts, leave that content unchanged');
+    expect(prompt).not.toContain('make your best guess');
   });
 });

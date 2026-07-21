@@ -32,11 +32,16 @@
 </div>
 
 <% if (aiEditable) { %>
-<!-- AI edit mode (preferences only; candidate evidence requires user confirmation) -->
+<!-- AI edit mode: always produces a reviewable draft and never saves directly. -->
 <div id="mode-ai" class="mode-panel" style="display:none">
-  <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Describe what you want to change in natural language. The AI will update the YAML while preserving everything else.</p>
+  <% if (profileFile === 'candidate') { %>
+    <div style="border:1px solid var(--yellow);background:rgba(210,153,34,.08);border-radius:6px;padding:10px 12px;margin-bottom:12px;color:var(--text-muted);font-size:12px;line-height:1.5">
+      This sends the current Candidate Profile to your configured DeepSeek model. AI produces a draft only: verify every fact in the diff, move it to the editor, then save explicitly.
+    </div>
+  <% } %>
+  <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Describe what you want to change in natural language. The AI will propose a complete YAML draft while preserving unrelated content.</p>
   <div style="display:flex;gap:12px;margin-bottom:12px">
-    <textarea id="ai-instruction" placeholder="e.g., Add a new skill 'Kubernetes' to infrastructure, update my location to San Francisco, add a deal-breaker for 'defense' industry..." style="flex:1;height:100px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:inherit;font-size:13px;resize:vertical"></textarea>
+    <textarea id="ai-instruction" placeholder="<%= profileFile === 'candidate' ? 'e.g., Reword my existing backend experience more concisely without changing any facts or metrics.' : 'e.g., Add San Francisco to my preferred locations and defense to my deal-breakers.' %>" style="flex:1;height:100px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:12px;font-family:inherit;font-size:13px;resize:vertical"></textarea>
   </div>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
     <button class="btn-save" onclick="aiEdit()" id="ai-btn">🤖 Update with AI</button>
@@ -46,7 +51,7 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <p style="font-size:13px;color:var(--text-muted);margin:0">Review changes — <span id="diff-summary"></span></p>
       <div style="display:flex;gap:8px">
-        <button class="btn-save" onclick="applyAiChanges()">✅ Apply Changes</button>
+        <button class="btn-save" onclick="applyAiChanges()">✅ Move Draft to Editor</button>
         <button class="btn-cancel" onclick="discardAiChanges()">Discard</button>
       </div>
     </div>
