@@ -12,7 +12,9 @@
 <div style="display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid var(--border)">
   <button class="mode-tab active" id="tab-view" onclick="switchMode('view')">📖 View</button>
   <button class="mode-tab" id="tab-edit" onclick="switchMode('edit')">✏️ Edit Manually</button>
-  <button class="mode-tab" id="tab-ai" onclick="switchMode('ai')">🤖 Edit with AI</button>
+  <% if (aiEditable) { %>
+    <button class="mode-tab" id="tab-ai" onclick="switchMode('ai')">🤖 Edit with AI</button>
+  <% } %>
 </div>
 
 <!-- View mode -->
@@ -29,7 +31,8 @@
   </div>
 </div>
 
-<!-- AI edit mode -->
+<% if (aiEditable) { %>
+<!-- AI edit mode (preferences only; candidate evidence requires user confirmation) -->
 <div id="mode-ai" class="mode-panel" style="display:none">
   <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Describe what you want to change in natural language. The AI will update the YAML while preserving everything else.</p>
   <div style="display:flex;gap:12px;margin-bottom:12px">
@@ -59,6 +62,7 @@
     </div>
   </div>
 </div>
+<% } %>
 
 <style>
 .mode-tab {

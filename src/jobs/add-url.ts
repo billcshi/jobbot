@@ -14,9 +14,8 @@ export interface AddUrlResult {
  * Add a job URL to the database for the active user.
  * Duplicate detection is per-user: the same URL can be added by different users.
  */
-export function addUrl(url: string): AddUrlResult {
+export function addUrl(url: string, userId = getActiveUserId()): AddUrlResult {
   const db = getDb();
-  const userId = getActiveUserId();
 
   // Check for duplicate (per-user: same URL + same user)
   const existing = db.prepare(

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { asyncPool } from '../src/utils/async-pool';
 
 describe('asyncPool', () => {
@@ -103,7 +103,7 @@ describe('asyncPool', () => {
     const resultsPromise = asyncPool(
       1,
       [1, 2, 3],
-      async (n, _idx, signal) => {
+      async (n) => {
         executionOrder.push(n);
         if (n === 1) {
           // Abort after first task starts

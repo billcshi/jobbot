@@ -7,8 +7,7 @@
  * `POST /api/pipeline/cancel` aborts the current pipeline.
  * `POST /api/pipeline/tasks/:jobId/cancel` cancels a single task.
  *
- * v0.6.1: Per-task AbortControllers for individual task cancellation,
- * task metadata (title, company, elapsed), and `cancelTask()`.
+ * Each task has its own AbortController, metadata, and cancellation state.
  */
 
 import { getConcurrency } from '../utils/config.js';
@@ -64,7 +63,7 @@ function emptyStage(): StageState {
   };
 }
 
-class PipelineStateTracker {
+export class PipelineStateTracker {
   running = false;
   currentStage: PipelineStage | null = null;
   stages: Record<PipelineStage, StageState> = {
@@ -83,7 +82,13 @@ class PipelineStateTracker {
 
   // ---- lifecycle ------------------------------------------------------------
 
-  startPipeline(): void {
+  /**
+   * Start or reserve this tracker. Returns false when it was already reserved.
+   * Crucially, an already-running tracker is never reset by a later service
+   * call; this closes the check-then-start race in HTTP background launches.
+   */
+  startPipeline(): boolean {
+    if (this.running) return false;
     this.running = true;
     this.startedAt = new Date().toISOString();
     this.finishedAt = null;
@@ -96,6 +101,7 @@ class PipelineStateTracker {
     };
     this.abortController = new AbortController();
     this.taskControllers.clear();
+    return true;
   }
 
   finishPipeline(): void {
@@ -298,7 +304,14 @@ export function getPipelineState(): PipelineStateTracker {
  * Each user gets an independent pipeline — they can run, cancel,
  * and inspect their own pipeline without affecting other users.
  */
-class PipelineManager {
+export interface PipelineReservation {
+  allowed: boolean;
+  state: PipelineStateTracker;
+  concurrency: number;
+  reason?: string;
+}
+
+export class PipelineManager {
   private trackers: Map<number, PipelineStateTracker> = new Map();
 
   /** Get (or create) the pipeline tracker for a given user. */
@@ -309,6 +322,29 @@ class PipelineManager {
       this.trackers.set(userId, tracker);
     }
     return tracker;
+  }
+
+  /**
+   * Atomically check capacity and mark a user's tracker running.
+   * JavaScript executes this synchronous method without an await boundary, so
+   * two HTTP requests cannot both observe an idle tracker and both win.
+   */
+  reserve(userId: number, jobCount = 1): PipelineReservation {
+    const state = this.get(userId);
+    if (state.snapshot().running) {
+      return {
+        allowed: false,
+        state,
+        concurrency: 0,
+        reason: 'Your pipeline is already running. Wait for it to finish or cancel it.',
+      };
+    }
+    const capacity = this.checkCapacity(userId, Math.max(1, jobCount));
+    if (!capacity.allowed) return { ...capacity, state };
+    if (!state.startPipeline()) {
+      return { allowed: false, state, concurrency: 0, reason: 'Your pipeline is already running.' };
+    }
+    return { allowed: true, state, concurrency: capacity.concurrency };
   }
 
   /**

@@ -1,16 +1,19 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/client.js';
-import { PROJECT_ROOT, RESUMES_DIR, PROMPTS_DIR, jobResumeDir } from '../utils/paths.js';
-import { readCandidate } from '../utils/profile-store.js';
+import { PROJECT_ROOT, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
 import { getActiveUserId } from '../utils/user-context.js';
-import { readYamlFile, parseYaml } from '../utils/yaml.js';
-import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
-import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
+import { createHash } from 'node:crypto';
+import { parseProvenancedTailoredResumeData } from '../domain/resume/contract.js';
+import type { ProvenancedTailoredResumeData } from '../domain/resume/types.js';
+import { ProfileRepository } from '../repositories/profile-repository.js';
+import { JobKnowledgeRepository } from '../repositories/job-knowledge-repository.js';
+import { storedRequirementsToDomain } from './requirements.js';
+import { validateResume } from '../resume/validate.js';
+import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
 
 const LATEX_TEMPLATE_PATH = `${PROJECT_ROOT}/resumes/master.tex`;
-const FIX_LATEX_PROMPT = readFileSync(`${PROMPTS_DIR}/fix-latex.md`, 'utf-8');
 
 /** Escape special LaTeX characters in user-provided text. */
 function latexEscape(s: string | null | undefined): string {
@@ -36,119 +39,13 @@ export interface RenderResult {
   latexFixed?: boolean;
 }
 
-/**
- * Use an LLM to fix LaTeX formatting issues found by visual audit.
- * Takes the generated .tex content + visual issues, returns fixed .tex.
- */
-async function fixLatexWithLLM(
-  texContent: string,
-  visualIssues: string[],
-  jobId: number,
-  version: number,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const apiKey = getDeepseekKey();
-  if (!apiKey) {
-    logger.warn('No DeepSeek API key — skipping LaTeX fix.');
-    return null;
-  }
-
-  const userMessage = [
-    '## Visual Audit Issues',
-    'Fix the following visual/layout problems in the LaTeX:',
-    ...visualIssues.map((v, i) => `${i + 1}. ${v}`),
-    '',
-    '## Current LaTeX',
-    '```latex',
-    texContent,
-    '```',
-  ].join('\n');
-
-  // Save prompt dump for debugging
-  try {
-    const { mkdirSync: mkdir, writeFileSync: writeFile } = await import('node:fs');
-    const dir = jobResumeDir(jobId);
-    mkdir(dir, { recursive: true });
-    const promptDump = [
-      '=== SYSTEM PROMPT ===',
-      FIX_LATEX_PROMPT,
-      '',
-      '=== USER MESSAGE ===',
-      userMessage,
-    ].join('\n');
-    writeFile(`${dir}/fix-latex-prompt-v${version}.txt`, promptDump, 'utf-8');
-    console.log(`  📝 Wrote fix-latex prompt: ${dir}/fix-latex-prompt-v${version}.txt`);
-  } catch { /* non-critical */ }
-
-  const startMs = Date.now();
-  try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: getDeepseekModel(),
-        messages: [
-          { role: 'system', content: FIX_LATEX_PROMPT },
-          { role: 'user', content: userMessage },
-        ],
-        max_tokens: 16384,
-      }),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
-    let fixedTex = data.choices[0]?.message?.content || '';
-
-    // Strip markdown code fences if present
-    fixedTex = fixedTex.replace(/^```(?:latex|tex)?\s*\n/, '').replace(/\n```\s*$/, '');
-
-    // Validate: must start with \documentclass and end with \end{document}
-    if (!fixedTex.includes('\\documentclass') || !fixedTex.includes('\\end{document}')) {
-      logger.warn('LaTeX fix LLM returned invalid output — using original.');
-      return null;
-    }
-
-    const usage = extractUsage(data as Record<string, unknown>);
-    logAiCall({
-      operation: 'fix-latex',
-      model: getDeepseekModel(),
-      provider: 'deepseek',
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Fix LaTeX: ${visualIssues.length} visual issue(s)`,
-      responseSummary: `${fixedTex.length} chars, valid tex`,
-      ...usage,
-      durationMs: Date.now() - startMs,
-      success: true,
-    });
-
-    return fixedTex;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logAiCall({
-      operation: 'fix-latex',
-      model: getDeepseekModel(),
-      provider: 'deepseek',
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Fix LaTeX: ${visualIssues.length} issue(s)`,
-      responseSummary: msg,
-      durationMs: Date.now() - startMs,
-      success: false,
-      error: msg,
-    });
-    logger.warn(`LaTeX fix LLM failed: ${msg}`);
-    return null;
-  }
+/** Legacy guard retained for callers: fail closed on every full-document rewrite. */
+export function preservesInjectedContent(
+  originalTex: string,
+  fixedTex: string,
+  _protectedContent: readonly string[],
+): boolean {
+  return originalTex === fixedTex;
 }
 
 interface CandidateProfile {
@@ -190,47 +87,22 @@ interface CandidateProfile {
   };
 }
 
-interface TailoredData {
-  summary: string;
-  selected_experience: {
-    company: string;
-    title: string;
-    start: string;
-    end: string | null;
-    highlights: string[];
-  }[];
-  selected_skills: {
-    languages?: string[];
-    frameworks?: string[];
-    infrastructure?: string[];
-    databases?: string[];
-    data_processing?: string[];
-  };
-  keyword_adjustments?: {
-    original: string;
-    adjusted: string;
-    reason: string;
-  }[];
-  selected_projects?: {
-    name: string;
-    highlights: string[];
-    technologies: string[];
-  }[];
-}
-
 /**
  * Render a tailored resume to PDF using LaTeX.
  *
  * Steps:
- * 1. Read the tailored YAML from local/resumes/
- * 2. Read the candidate profile
- * 3. Read the LaTeX template
- * 4. Inject data into the template
- * 5. Compile with pdflatex
+ * 1. Resolve a canonical resume version and its immutable content_json
+ * 2. Read its bound profile revision and frozen job requirements
+ * 3. Re-run truth/provenance validation and require valid resume_claims
+ * 4. Read the LaTeX template
+ * 5. Inject data into the template
+ * 6. Compile with pdflatex
  */
-export async function renderJob(jobId: number, visualFeedback?: string[], composeVersion?: number): Promise<RenderResult> {
+export async function renderJob(jobId: number, visualFeedback?: string[], _composeVersion?: number, userId?: number, resumeVersionId?: number, signal?: AbortSignal): Promise<RenderResult> {
+  throwIfAborted(signal);
+  const resolvedUserId = userId ?? getActiveUserId();
   const db = getDb();
-  const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(jobId) as
+  const job = db.prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, resolvedUserId) as
     | { id: number }
     | undefined;
 
@@ -238,31 +110,74 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
     return { success: false, jobId, error: `Job not found: id=${jobId}` };
   }
 
-  // Check if tailored data exists
-  const tailoredYamlPath = `${jobResumeDir(jobId)}/tailored.yaml`;
-  if (!existsSync(tailoredYamlPath)) {
-    return {
-      success: false,
-      jobId,
-      error: 'No tailored resume data found. Run "pnpm jobbot tailor --job" first.',
-    };
+  const canonicalVersion = (resumeVersionId === undefined
+    ? db.prepare(`
+        SELECT id, draft_id, profile_revision_id, job_snapshot_id, content_json
+        FROM resume_versions
+        WHERE job_id = ? AND user_id = ? AND content_json IS NOT NULL
+        ORDER BY id DESC LIMIT 1
+      `).get(jobId, resolvedUserId)
+    : db.prepare(`
+        SELECT id, draft_id, profile_revision_id, job_snapshot_id, content_json
+        FROM resume_versions
+        WHERE id = ? AND job_id = ? AND user_id = ? AND content_json IS NOT NULL
+      `).get(resumeVersionId, jobId, resolvedUserId)) as {
+        id: number;
+        draft_id: number | null;
+        profile_revision_id: number | null;
+        job_snapshot_id: number | null;
+        content_json: string;
+      } | undefined;
+  if (!canonicalVersion || canonicalVersion.profile_revision_id === null || canonicalVersion.job_snapshot_id === null) {
+    return { success: false, jobId, error: 'No fully bound canonical resume version exists. Tailor first.' };
   }
 
-  let tailored: TailoredData;
-  try {
-    tailored = readYamlFile<TailoredData>(tailoredYamlPath);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, jobId, error: `Failed to read tailored YAML: ${msg}` };
-  }
-
-  // Read candidate profile
+  let tailored: ProvenancedTailoredResumeData;
   let candidate: CandidateProfile;
   try {
-    candidate = parseYaml<CandidateProfile>(readCandidate(getActiveUserId()));
+    tailored = parseProvenancedTailoredResumeData(JSON.parse(canonicalVersion.content_json) as unknown);
+    const revision = new ProfileRepository(db).getRevision(canonicalVersion.profile_revision_id);
+    if (!revision) throw new Error(`Profile revision ${canonicalVersion.profile_revision_id} does not exist`);
+    candidate = revision.candidate as unknown as CandidateProfile;
+    const requirements = storedRequirementsToDomain(
+      new JobKnowledgeRepository(db).listRequirements(canonicalVersion.job_snapshot_id),
+    );
+    if (requirements.length === 0) throw new Error('Canonical job snapshot has no frozen requirements');
+    const truth = validateResume(revision.candidate, tailored, { requirements });
+    if (!truth.valid) {
+      throw new Error(truth.issues.map((item) => `${item.path}: ${item.message}`).join('; '));
+    }
+
+    const claimRows = db.prepare(`
+      SELECT rendered_text, source_claim_ids_json, validation_status
+      FROM resume_claims WHERE resume_version_id = ? ORDER BY section, ordinal
+    `).all(canonicalVersion.id) as Array<{
+      rendered_text: string;
+      source_claim_ids_json: string;
+      validation_status: string;
+    }>;
+    if (claimRows.length !== tailored.claim_provenance.length) {
+      throw new Error('Canonical resume claim rows do not match content provenance');
+    }
+    const unusedRows = [...claimRows];
+    for (const provenance of tailored.claim_provenance) {
+      const rowIndex = unusedRows.findIndex((row) => row.rendered_text === provenance.claim);
+      if (rowIndex < 0) throw new Error(`Missing canonical claim row for ${JSON.stringify(provenance.claim)}`);
+      const row = unusedRows.splice(rowIndex, 1)[0]!;
+      if (row.validation_status !== 'valid') {
+        throw new Error(`Resume claim is not valid: ${JSON.stringify(provenance.claim)}`);
+      }
+      const ids = JSON.parse(row.source_claim_ids_json) as unknown;
+      if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
+        throw new Error('Canonical resume claim has invalid source IDs');
+      }
+      if ([...ids].sort().join('\n') !== [...provenance.source_claim_ids].sort().join('\n')) {
+        throw new Error(`Canonical claim provenance differs for ${JSON.stringify(provenance.claim)}`);
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, jobId, error: `Failed to read candidate profile: ${msg}` };
+    return { success: false, jobId, error: `Canonical resume validation failed: ${msg}` };
   }
 
   // Read LaTeX template
@@ -294,18 +209,27 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   /** Format a date range: "April 2025 – Present" or "September 2023 – June 2024". */
   function formatDateRange(start: string | null | undefined, end: string | null | undefined): string {
     const s = formatDate(start);
-    if (!end) return `${s} -- Present`;
-    return `${s} -- ${formatDate(end)}`;
+    const e = formatDate(end);
+    // Both missing — show nothing
+    if (!start && !end) return '';
+    // Only end date known (e.g., graduation year) — show just the end date
+    if (!start && end) return e;
+    // End is null or "Present" — ongoing (job or in-progress degree)
+    if (!end || e === 'Present') return `${s} -- Present`;
+    return `${s} -- ${e}`;
   }
 
   // Inject the data into the template
   let tex = template;
+  const inject = (value: string | null | undefined): string => {
+    return latexEscape(value);
+  };
 
   // Simple replacements
-  tex = tex.replace(/\{\{name\}\}/g, fullName);
-  tex = tex.replace(/\{\{email\}\}/g, candidate.email);
-  tex = tex.replace(/\{\{phone\}\}/g, candidate.phone);
-  tex = tex.replace(/\{\{location\}\}/g, locationStr);
+  tex = tex.replace(/\{\{name\}\}/g, inject(fullName));
+  tex = tex.replace(/\{\{email\}\}/g, inject(candidate.email));
+  tex = tex.replace(/\{\{phone\}\}/g, inject(candidate.phone));
+  tex = tex.replace(/\{\{location\}\}/g, inject(locationStr));
 
   // ---- Build experience section ----
   const experienceItems = tailored.selected_experience;
@@ -314,15 +238,15 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
     const itemTemplate = expSectionMatch[1]!;
     const expContent = experienceItems.map((exp) => {
       let item = itemTemplate;
-      item = item.replace(/\{\{company\}\}/g, latexEscape(exp.company));
-      item = item.replace(/\{\{title\}\}/g, latexEscape(exp.title));
-      item = item.replace(/\{\{date_range\}\}/g, latexEscape(formatDateRange(exp.start, exp.end)));
+      item = item.replace(/\{\{company\}\}/g, inject(exp.company));
+      item = item.replace(/\{\{title\}\}/g, inject(exp.title));
+      item = item.replace(/\{\{date_range\}\}/g, inject(formatDateRange(exp.start, exp.end)));
 
       // Build highlights
       const hlMatch = item.match(/\{\{#highlights\}\}([\s\S]*?)\{\{\/highlights\}\}/);
       if (hlMatch) {
         const hlTemplate = hlMatch[1]!;
-        const hlContent = exp.highlights.map((h) => hlTemplate.replace(/\{\{\.\}\}/g, latexEscape(h))).join('\n');
+        const hlContent = exp.highlights.map((h) => hlTemplate.replace(/\{\{\.\}\}/g, inject(h))).join('\n');
         item = item.replace(hlMatch[0], hlContent);
       }
 
@@ -342,10 +266,10 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
     const itemTemplate = eduSectionMatch[1]!;
     const eduContent = candidate.education.map((edu) => {
       let item = itemTemplate;
-      item = item.replace(/\{\{school\}\}/g, latexEscape(edu.school));
-      item = item.replace(/\{\{degree\}\}/g, latexEscape(edu.degree));
-      item = item.replace(/\{\{date_range\}\}/g, latexEscape(formatDateRange(edu.start, edu.end)));
-      item = item.replace(/\{\{location\}\}/g, latexEscape(edu.location || ''));
+      item = item.replace(/\{\{school\}\}/g, inject(edu.school));
+      item = item.replace(/\{\{degree\}\}/g, inject(edu.degree));
+      item = item.replace(/\{\{date_range\}\}/g, inject(formatDateRange(edu.start, edu.end)));
+      item = item.replace(/\{\{location\}\}/g, inject(edu.location || ''));
 
       // Handle notes conditional — truncate long coursework lists
       const notesMatch = item.match(/\{\{#notes\}\}([\s\S]*?)\{\{\/notes\}\}/);
@@ -359,7 +283,7 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
               notesText = items.slice(0, 6).join(',') + ', ...';
             }
           }
-          item = item.replace(notesMatch[0], notesMatch[1]!.replace(/\{\{notes\}\}/g, latexEscape(notesText)));
+          item = item.replace(notesMatch[0], notesMatch[1]!.replace(/\{\{notes\}\}/g, inject(notesText)));
         } else {
           item = item.replace(notesMatch[0], '');
         }
@@ -398,8 +322,8 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
     if (skillsList.length > 0) {
       const skillsContent = skillsList.map((s) => {
         let item = itemTemplate;
-        item = item.replace(/\{\{category\}\}/g, latexEscape(s.category));
-        item = item.replace(/\{\{skills_list\}\}/g, latexEscape(s.skills_list));
+        item = item.replace(/\{\{category\}\}/g, inject(s.category));
+        item = item.replace(/\{\{skills_list\}\}/g, inject(s.skills_list));
         item = item.replace(/\{\{[#/]?\w+\}\}/g, '');
         return item;
       }).join('\n');
@@ -412,12 +336,9 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   // ---- Build projects section (optional) ----
   const projSectionMatch = tex.match(/\{\{#has_projects\}\}([\s\S]*?)\{\{\/has_projects\}\}/);
   if (projSectionMatch) {
-    // Respect LLM's show_projects flag — default to true for backward compat
-    const projects = candidate.projects;
-    // Use LLM-selected projects with customized highlights, fall back to first profile project
-    const displayProjects = (tailored.selected_projects && tailored.selected_projects.length > 0)
-      ? tailored.selected_projects.slice(0, 1)
-      : (projects || []).slice(0, 1);
+    // Only render projects selected in the canonical, validated resume. Falling
+    // back to profile content would bypass the resume claim gate.
+    const displayProjects = (tailored.selected_projects ?? []).slice(0, 1);
     if (displayProjects.length > 0) {
       const sectionTemplate = projSectionMatch[1]!;
       // Now iterate each project against the inner {{#projects}}...{{/projects}} block
@@ -427,12 +348,12 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
         const itemTemplate = projItemMatch[1]!;
         const projContent = displayProjects.map((proj) => {
           let item = itemTemplate;
-          item = item.replace(/\{\{project_name\}\}/g, latexEscape(proj.name));
-          item = item.replace(/\{\{technologies\}\}/g, latexEscape(proj.technologies.join(', ')));
+          item = item.replace(/\{\{project_name\}\}/g, inject(proj.name));
+          item = item.replace(/\{\{technologies\}\}/g, inject(proj.technologies.join(', ')));
           const hlMatch = item.match(/\{\{#highlights\}\}([\s\S]*?)\{\{\/highlights\}\}/);
           if (hlMatch && proj.highlights.length > 0) {
             const hlTemplate = hlMatch[1]!;
-            const hlContent = proj.highlights.slice(0, 2).map((h) => hlTemplate.replace(/\{\{\.\}\}/g, latexEscape(h))).join('\n');
+            const hlContent = proj.highlights.slice(0, 2).map((h) => hlTemplate.replace(/\{\{\.\}\}/g, inject(h))).join('\n');
             item = item.replace(hlMatch[0], hlContent);
           }
           item = item.replace(/\{\{[#/]?\w+\}\}/g, '');
@@ -451,7 +372,7 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   const objSectionMatch = tex.match(/\{\{#objective\}\}([\s\S]*?)\{\{\/objective\}\}/);
   if (objSectionMatch) {
     if (tailored.summary) {
-      tex = tex.replace(objSectionMatch[0], objSectionMatch[1]!.replace(/\{\{objective\}\}/g, latexEscape(tailored.summary)));
+      tex = tex.replace(objSectionMatch[0], objSectionMatch[1]!.replace(/\{\{objective\}\}/g, inject(tailored.summary)));
     } else {
       tex = tex.replace(objSectionMatch[0], '');
     }
@@ -482,7 +403,7 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   const linkedinCondMatch = tex.match(/\{\{#linkedin\}\}([\s\S]*?)\{\{\/linkedin\}\}/);
   if (linkedinCondMatch) {
     if (linkedinUsername) {
-      tex = tex.replace(linkedinCondMatch[0], linkedinCondMatch[1]!.replace(/\{\{linkedin\}\}/g, linkedinUsername));
+      tex = tex.replace(linkedinCondMatch[0], linkedinCondMatch[1]!.replace(/\{\{linkedin\}\}/g, inject(linkedinUsername)));
     } else {
       tex = tex.replace(linkedinCondMatch[0], '');
     }
@@ -492,7 +413,7 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   const githubCondMatch = tex.match(/\{\{#github\}\}([\s\S]*?)\{\{\/github\}\}/);
   if (githubCondMatch) {
     if (githubUsername) {
-      tex = tex.replace(githubCondMatch[0], githubCondMatch[1]!.replace(/\{\{github\}\}/g, githubUsername));
+      tex = tex.replace(githubCondMatch[0], githubCondMatch[1]!.replace(/\{\{github\}\}/g, inject(githubUsername)));
     } else {
       tex = tex.replace(githubCondMatch[0], '');
     }
@@ -502,24 +423,20 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
   tex = tex.replace(/\{\{[#/]?\w+\}\}/g, '');
   tex = tex.replace(/\{\{(\w+)\}\}/g, '');
 
-  // ---- Fix LaTeX for visual issues (before writing + compiling) ----
-  let latexFixed = false;
+  // Full-document model rewrites are intentionally disabled: they can add
+  // unprovenanced resume claims. Layout changes belong in the reviewed template.
+  const latexFixed = false;
   if (visualFeedback && visualFeedback.length > 0) {
-    console.log(`  🔧 Fixing LaTeX for ${visualFeedback.length} visual issue(s)...`);
-    const v = composeVersion ?? 1;
-    const fixed = await fixLatexWithLLM(tex, visualFeedback, jobId, v);
-    if (fixed) {
-      tex = fixed;
-      latexFixed = true;
-      console.log('  ✓ LaTeX adjusted for visual feedback.');
-    } else {
-      console.log('  ⚠ LaTeX fix skipped — using original.');
-    }
+    logger.warn(
+      `Skipped ${visualFeedback.length} automatic LaTeX rewrite(s); `
+      + 'edit the reviewed template for layout-only changes.',
+    );
   }
 
   // ---- Write .tex file ----
   mkdirSync(RESUMES_DIR, { recursive: true });
-  const texPath = `${jobResumeDir(jobId)}/resume.tex`;
+  const texPath = `${jobResumeDir(jobId)}/resume-${canonicalVersion.id}.tex`;
+  throwIfAborted(signal);
   writeFileSync(texPath, tex, 'utf-8');
   logger.info(`Wrote LaTeX: ${texPath}`);
 
@@ -531,31 +448,55 @@ export async function renderJob(jobId: number, visualFeedback?: string[], compos
       timeout: 30_000,
       stdio: 'pipe',
     });
+    throwIfAborted(signal);
     execSync(`pdflatex -interaction=nonstopmode -output-directory="${outputDir}" "${texPath}"`, {
       timeout: 30_000,
       stdio: 'pipe',
     });
 
-    const pdfPath = `${jobResumeDir(jobId)}/resume.pdf`;
+    const pdfPath = `${jobResumeDir(jobId)}/resume-${canonicalVersion.id}.pdf`;
     if (!existsSync(pdfPath)) {
       return { success: false, jobId, texPath, error: 'pdflatex completed but PDF was not produced. Check LaTeX log for errors.' };
     }
 
-    // Update resume_versions with the PDF path
-    // Update the most recent resume_version for this job
-    db.prepare(
-      "UPDATE resume_versions SET pdf_path = ?, created_at = datetime('now') WHERE job_id = ? AND id = (SELECT MAX(id) FROM resume_versions WHERE job_id = ?)",
-    ).run(pdfPath, jobId, jobId);
+    const artifact = (type: string, filePath: string): void => {
+      const data = readFileSync(filePath);
+      db.prepare(
+        `INSERT OR REPLACE INTO artifacts
+           (resume_draft_id, resume_version_id, artifact_type, path, sha256, byte_size, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+      ).run(
+        canonicalVersion.draft_id,
+        canonicalVersion.id,
+        type,
+        filePath,
+        createHash('sha256').update(data).digest('hex'),
+        data.byteLength,
+      );
+    };
+
+    db.transaction(() => {
+      throwIfAborted(signal);
+      db.prepare('UPDATE resume_versions SET tex_path = ?, pdf_path = ? WHERE id = ?')
+        .run(texPath, pdfPath, canonicalVersion.id);
+      if (canonicalVersion.draft_id !== null) {
+        db.prepare("UPDATE resume_drafts SET status = 'rendered', updated_at = datetime('now') WHERE id = ?")
+          .run(canonicalVersion.draft_id);
+      }
+      artifact('tex', texPath);
+      artifact('pdf', pdfPath);
+    })();
 
     // Note: status change to 'composed' is handled by compose.ts.
     // When render is called standalone, we leave status as-is.
     db.prepare(
-      "UPDATE jobs SET updated_at = datetime('now') WHERE id = ?",
-    ).run(jobId);
+      "UPDATE jobs SET updated_at = datetime('now') WHERE id = ? AND user_id = ?",
+    ).run(jobId, resolvedUserId);
 
     logger.info(`PDF rendered: ${pdfPath}`);
     return { success: true, jobId, pdfPath, texPath, latexFixed };
   } catch (err) {
+    rethrowAbort(err, signal);
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, jobId, texPath, error: `pdflatex failed: ${msg}` };
   }

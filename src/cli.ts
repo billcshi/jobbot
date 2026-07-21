@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * JobBot CLI — v0.5
+ * JobBot CLI
  *
  * Commands:
  *   init-db                     Create/update the SQLite database
@@ -22,6 +22,9 @@ import { startUi } from './ui/server.js';
 import { runOnce, startSchedule } from './jobs/schedule.js';
 import { logger } from './utils/logger.js';
 import { setActiveUser, getActiveUserName, getActiveUserId, listUsers, addUser } from './utils/user-context.js';
+import { legacyAppContext } from './utils/app-context.js';
+import { AuthService } from './auth/auth-service.js';
+import { getDb } from './db/client.js';
 
 function usage(): never {
   console.log(`JobBot — personal job-search assistant
@@ -45,6 +48,7 @@ Usage:
   pnpm jobbot user-list
   pnpm jobbot user-add <name>
   pnpm jobbot user-switch <name>
+  pnpm jobbot auth-setup <existing-user>
 `);
   process.exit(1);
 }
@@ -163,6 +167,7 @@ async function main(): Promise<void> {
       const tier = flags['tier'];
       const status = flags['status'];
       const force = flags['force'] === 'true';
+      const userId = getActiveUserId();
 
       if (jobId) {
         try {
@@ -176,8 +181,8 @@ async function main(): Promise<void> {
         if (!force) {
           const db = (await import('./db/client.js')).getDb();
           const count = (db.prepare(
-            'SELECT COUNT(*) as count FROM jobs WHERE tier = ?',
-          ).get(tier.toUpperCase()) as { count: number }).count;
+            'SELECT COUNT(*) as count FROM jobs WHERE tier = ? AND user_id = ?',
+          ).get(tier.toUpperCase(), userId) as { count: number }).count;
           if (count === 0) {
             console.log(`No jobs found with tier ${tier.toUpperCase()}.`);
             break;
@@ -192,8 +197,8 @@ async function main(): Promise<void> {
         if (!force) {
           const db = (await import('./db/client.js')).getDb();
           const count = (db.prepare(
-            'SELECT COUNT(*) as count FROM jobs WHERE status = ?',
-          ).get(status) as { count: number }).count;
+            'SELECT COUNT(*) as count FROM jobs WHERE status = ? AND user_id = ?',
+          ).get(status, userId) as { count: number }).count;
           if (count === 0) {
             console.log(`No jobs found with status "${status}".`);
             break;
@@ -373,7 +378,7 @@ async function main(): Promise<void> {
 
       if (once) {
         console.log('Running pipeline once...');
-        await runOnce();
+        await runOnce(legacyAppContext());
         console.log('Done.');
       } else if (interval) {
         const minutes = parseInt(interval, 10);
@@ -383,7 +388,7 @@ async function main(): Promise<void> {
         }
         console.log(`Starting pipeline schedule: every ${minutes} minute(s).`);
         console.log('Press Ctrl+C to stop.');
-        startSchedule(minutes);
+        startSchedule(minutes, legacyAppContext());
         // Keep process alive
         await new Promise(() => { /* wait forever */ });
       } else {
@@ -408,7 +413,7 @@ async function main(): Promise<void> {
     case 'user-list': {
       const users = listUsers();
       if (users.length === 0) {
-        console.log('No users found. Run init-db to create the default user.');
+        console.log('No users found. Register in the Web UI or run user-add <name>.');
       } else {
         console.log(`${'ID'.padEnd(4)} │ ${'NAME'.padEnd(20)} │ ${'ACTIVE'.padEnd(6)} │ CREATED`);
         console.log('─'.repeat(60));
@@ -443,6 +448,27 @@ async function main(): Promise<void> {
       }
       setActiveUser(name);
       console.log(`Switched to user: ${getActiveUserName()} (id=${getActiveUserId()})`);
+      break;
+    }
+
+    case 'auth-setup': {
+      const name = positional[0];
+      if (!name) {
+        logger.error('auth-setup requires an existing user name');
+        process.exit(1);
+      }
+      initDb();
+      try {
+        const setup = new AuthService(getDb()).createSetupToken(name);
+        const url = new URL('http://localhost:3000/login');
+        url.searchParams.set('setup', setup.token);
+        url.searchParams.set('username', setup.username);
+        console.log('Open this one-time setup link within 15 minutes:');
+        console.log(url.toString());
+      } catch (error: unknown) {
+        logger.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
       break;
     }
 

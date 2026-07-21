@@ -18,6 +18,48 @@ interface JobForScoring {
   description: string | null;
 }
 
+const SCORE_FIELDS = new Set(['score', 'tier', 'reason']);
+const SCORE_TIERS = ['A', 'B', 'C', 'D'] as const;
+type ScoreTier = typeof SCORE_TIERS[number];
+
+function tierForScore(score: number): ScoreTier {
+  if (score >= 0.8) return 'A';
+  if (score >= 0.65) return 'B';
+  if (score >= 0.5) return 'C';
+  return 'D';
+}
+
+/** Validate the untrusted JSON value returned by the scoring model. */
+export function parseScoreResponse(value: unknown): ScoreResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid score response: expected an object');
+  }
+  const record = value as Record<string, unknown>;
+  const unknownFields = Object.keys(record).filter((key) => !SCORE_FIELDS.has(key));
+  if (unknownFields.length > 0) {
+    throw new Error(`Invalid score response: unknown field(s): ${unknownFields.join(', ')}`);
+  }
+  if (typeof record.score !== 'number' || !Number.isFinite(record.score)) {
+    throw new Error('Invalid score response: score must be a finite number');
+  }
+  if (record.score < 0 || record.score > 1) {
+    throw new Error('Invalid score response: score must be between 0 and 1');
+  }
+  if (typeof record.tier !== 'string' || !SCORE_TIERS.includes(record.tier as ScoreTier)) {
+    throw new Error('Invalid score response: tier must be one of A, B, C, or D');
+  }
+  if (typeof record.reason !== 'string' || record.reason.trim().length === 0) {
+    throw new Error('Invalid score response: reason must be a non-empty string');
+  }
+  const expectedTier = tierForScore(record.score);
+  if (record.tier !== expectedTier) {
+    throw new Error(
+      `Invalid score response: tier ${record.tier} is inconsistent with score ${record.score} (expected ${expectedTier})`,
+    );
+  }
+  return { score: record.score, tier: record.tier, reason: record.reason.trim() };
+}
+
 /**
  * Score a single job using DeepSeek LLM.
  *
@@ -28,6 +70,7 @@ export async function scoreJobWithLLM(
   job: JobForScoring,
   instruction?: string,
   signal?: AbortSignal,
+  userId?: number,
 ): Promise<ScoreResult> {
   const apiKey = getDeepseekKey();
   if (!apiKey) {
@@ -45,18 +88,20 @@ export async function scoreJobWithLLM(
     `${(job.description || '').slice(0, 10_000)}`,
   ].join('\n');
 
-  const userId = getActiveUserId();
+  // Explicit profile identity is used by application services. The fallback
+  // keeps the public function compatible with legacy CLI callers.
+  const resolvedUserId = userId ?? getActiveUserId();
   const candidateInfo = [
     `## Candidate Profile`,
     '```yaml',
-    readCandidate(userId),
+    readCandidate(resolvedUserId),
     '```',
   ].join('\n');
 
   const prefsInfo = [
     `## Scoring Preferences`,
     '```yaml',
-    readPreferences(userId),
+    readPreferences(resolvedUserId),
     '```',
   ].join('\n');
 
@@ -129,13 +174,9 @@ export async function scoreJobWithLLM(
       throw new Error(`Empty response from DeepSeek (raw: ${responseText.slice(0, 300)})`);
     }
 
-    const parsed = parseLLMJson(content, `score job #${job.id}`) as Record<string, any>; // LLM output is inherently untyped
+    const parsed = parseLLMJson(content, `score job #${job.id}`);
     const usage = extractUsage(data as Record<string, unknown>);
-    const result = {
-      score: typeof parsed.score === 'number' ? parsed.score : 0,
-      tier: parsed.tier || 'D',
-      reason: parsed.reason || '',
-    };
+    const result = parseScoreResponse(parsed);
 
     logAiCall({
       operation: 'score',

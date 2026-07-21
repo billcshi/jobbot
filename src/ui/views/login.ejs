@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — JobBot</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: #0d1117; color: #e6edf3; padding: 24px;
+    }
+    main { width: 100%; max-width: 400px; }
+    .brand { text-align: center; margin-bottom: 24px; }
+    .brand h1 { margin: 0; font-size: 30px; letter-spacing: -1px; }
+    .brand p { margin: 8px 0 0; color: #8b949e; font-size: 14px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: #0d1117; padding: 4px; border-radius: 8px; margin-bottom: 22px; }
+    .tab { border: 0; border-radius: 6px; padding: 8px; color: #8b949e; background: transparent; cursor: pointer; font: inherit; }
+    .tab.active { background: #21262d; color: #e6edf3; font-weight: 600; }
+    form { display: grid; gap: 15px; }
+    label { display: grid; gap: 7px; color: #c9d1d9; font-size: 13px; font-weight: 600; }
+    input { width: 100%; border: 1px solid #30363d; border-radius: 7px; padding: 10px 12px; background: #0d1117; color: #e6edf3; font: inherit; outline: none; }
+    input:focus { border-color: #2f81f7; box-shadow: 0 0 0 3px rgba(47,129,247,.15); }
+    .hint { color: #8b949e; font-size: 11px; font-weight: 400; }
+    .submit { border: 0; border-radius: 7px; padding: 10px 14px; background: #238636; color: white; font: inherit; font-weight: 600; cursor: pointer; margin-top: 3px; }
+    .submit:hover { background: #2ea043; }
+    .submit:disabled { opacity: .6; cursor: wait; }
+    .error { min-height: 18px; margin: 14px 0 0; color: #ff7b72; font-size: 13px; text-align: center; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">
+      <h1>JobBot</h1>
+      <p>Your local, quality-first job search workspace.</p>
+    </div>
+    <section class="card">
+      <div class="tabs" role="tablist">
+        <button class="tab active" id="login-tab" type="button" onclick="selectMode('login')">Sign in</button>
+        <button class="tab" id="register-tab" type="button" onclick="selectMode('register')">Create account</button>
+      </div>
+      <form id="auth-form">
+        <label>
+          Username
+          <input id="username" name="username" autocomplete="username" required minlength="1" maxlength="128" autofocus>
+          <span class="hint register-only hidden">3–32 characters: letters, numbers, dot, underscore, or hyphen.</span>
+        </label>
+        <label>
+          Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+          <span class="hint register-only hidden">Use at least 10 characters.</span>
+        </label>
+        <label class="register-only hidden" id="confirm-label">
+          Confirm password
+          <input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" maxlength="256">
+        </label>
+        <button class="submit" id="submit-button" type="submit">Sign in</button>
+      </form>
+      <p class="error" id="error" role="alert"></p>
+    </section>
+  </main>
+  <script>
+    let mode = 'login';
+    const setupParams = new URLSearchParams(window.location.search);
+    const setupToken = setupParams.get('setup');
+    const setupUsername = setupParams.get('username');
+    function selectMode(nextMode) {
+      mode = nextMode;
+      document.getElementById('login-tab').classList.toggle('active', mode === 'login');
+      document.getElementById('register-tab').classList.toggle('active', mode === 'register');
+      for (const element of document.querySelectorAll('.register-only')) {
+        element.classList.toggle('hidden', mode !== 'register');
+      }
+      const password = document.getElementById('password');
+      const confirmation = document.getElementById('confirm-password');
+      const username = document.getElementById('username');
+      const isNewRegistration = mode === 'register' && !setupToken;
+      username.minLength = isNewRegistration ? 3 : 1;
+      username.maxLength = isNewRegistration ? 32 : 128;
+      password.autocomplete = mode === 'register' ? 'new-password' : 'current-password';
+      password.minLength = mode === 'register' ? 10 : 0;
+      confirmation.required = mode === 'register';
+      document.getElementById('submit-button').textContent = mode === 'login'
+        ? 'Sign in'
+        : (setupToken ? 'Set password' : 'Create account');
+      document.getElementById('error').textContent = '';
+    }
+
+    if (setupToken && setupUsername) {
+      document.getElementById('username').value = setupUsername;
+      document.getElementById('username').readOnly = true;
+      document.getElementById('register-tab').textContent = 'Set password';
+      selectMode('register');
+      window.history.replaceState({}, '', '/login');
+    }
+
+    document.getElementById('auth-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const error = document.getElementById('error');
+      const button = document.getElementById('submit-button');
+      if (mode === 'register' && password !== document.getElementById('confirm-password').value) {
+        error.textContent = 'Passwords do not match.';
+        return;
+      }
+      button.disabled = true;
+      error.textContent = '';
+      try {
+        const response = await fetch(`/api/auth/${mode}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username,
+            password,
+            ...(mode === 'register' && setupToken ? { setupToken } : {}),
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Authentication failed.');
+        window.location.assign('/');
+      } catch (requestError) {
+        error.textContent = requestError instanceof Error ? requestError.message : 'Authentication failed.';
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

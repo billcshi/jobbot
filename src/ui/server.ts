@@ -1,5 +1,5 @@
 /**
- * JobBot Web UI — v0.5
+ * JobBot Web UI
  *
  * A simple local-only Express server that reads from SQLite and renders
  * HTML pages for browsing the job-search pipeline.
@@ -12,18 +12,21 @@
 import express from 'express';
 import path from 'node:path';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { getDb } from '../db/client.js';
 import { deleteJob, deleteByTier, deleteByStatus } from '../jobs/delete.js';
 import { addUrl } from '../jobs/add-url.js';
 import { extractSalaryRanges } from '../jobs/market-data.js';
 import { PROJECT_ROOT, LOCAL_DIR, RESUMES_DIR, jobResumeDir } from '../utils/paths.js';
-import { readCandidate, readPreferences, readAnswers, writeProfile } from '../utils/profile-store.js';
+import { readCandidate, readPreferences, writeProfile } from '../utils/profile-store.js';
 import { parseYaml } from '../utils/yaml.js';
-import { getDeepseekKey, getDeepseekModel } from '../utils/config.js';
+import { getDeepseekKey, getDeepseekModel, getStageConcurrency } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 import { getPipelineManager } from '../jobs/pipeline-state.js';
-import { setActiveUser, resolveUserId, resolveUserName, getActiveUserId, getActiveUserName, listUsers, addUser } from '../utils/user-context.js';
+import { appContextForUser } from '../utils/app-context.js';
+import { createDefaultPipeline } from '../application/pipeline/default-pipeline.js';
+import { AuthError, AuthService } from '../auth/auth-service.js';
 
 const app = express();
 
@@ -41,8 +44,49 @@ app.set('view options', { cache: false });
 // Override EJS cache
 app.locals.cache = false;
 
-// Serve generated PDFs as static files
-app.use('/resumes', express.static(RESUMES_DIR));
+export interface MutationRequestMetadata {
+  method: string;
+  protocol?: string;
+  host?: string;
+  origin?: string;
+  secFetchSite?: string;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+}
+
+/** Browser-focused same-origin guard for every state-changing HTTP method. */
+export function isTrustedMutationRequest(request: MutationRequestMetadata): boolean {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method.toUpperCase())) return true;
+  if (!request.host || !request.origin) return false;
+  if (request.secFetchSite && request.secFetchSite.toLowerCase() !== 'same-origin') return false;
+
+  try {
+    const expected = new URL(`${request.protocol ?? 'http'}://${request.host}`);
+    const origin = new URL(request.origin);
+    if (!isLoopbackHostname(expected.hostname) || !isLoopbackHostname(origin.hostname)) return false;
+    return expected.origin.toLowerCase() === origin.origin.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+app.use((req, res, next) => {
+  const trusted = isTrustedMutationRequest({
+    method: req.method,
+    protocol: req.protocol,
+    host: req.get('host'),
+    origin: req.get('origin'),
+    secFetchSite: req.get('sec-fetch-site'),
+  });
+  if (!trusted) {
+    res.status(403).json({ error: 'Mutation rejected: same-origin localhost request required.' });
+    return;
+  }
+  next();
+});
 
 // ----- cookie parser (minimal, no dependency) ----------------------------------
 
@@ -60,37 +104,164 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ----- user context middleware -----------------------------------------------
+// ----- local authentication --------------------------------------------------
 
-/**
- * Resolve the active user per-request from cookie or query param.
- * Stores user info on res.locals — NEVER mutates the global singleton.
- * This allows concurrent web users to see their own scores without
- * interfering with each other.
- *
- * The global setActiveUser() / getActiveUserId() pair is for CLI use only.
- */
-app.use((req, res, next) => {
-  // Priority: query param (for explicit switching) → cookie → default
-  const userParam = typeof req.query._user === 'string' ? req.query._user : undefined;
+const SESSION_COOKIE = 'jobbot_session';
+const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+function requestCookies(req: express.Request): Record<string, string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cookies = (req as any).cookies as Record<string, string> | undefined;
-  const userName = userParam || cookies?.active_user || 'default';
+  return ((req as any).cookies as Record<string, string> | undefined) ?? {};
+}
 
-  // Resolve user for THIS request only — no global mutation
-  const userId = resolveUserId(userName);
-  res.locals.userId = userId;
-  res.locals.userName = resolveUserName(userId);
-  res.locals.activeUser = res.locals.userName;   // backward compat for views
-  res.locals.activeUserId = userId;              // backward compat for views
-  res.locals.allUsers = listUsers();
+function sessionCookie(token: string, secure: boolean): string {
+  return `${SESSION_COOKIE}=${token}; Max-Age=${SESSION_MAX_AGE_SECONDS}; HttpOnly; SameSite=Strict; Path=/${secure ? '; Secure' : ''}`;
+}
 
-  // Set cookie when explicitly switched via query param
-  if (userParam) {
-    res.setHeader('Set-Cookie', `active_user=${userParam}; Max-Age=${365 * 24 * 60 * 60}; HttpOnly; Path=/`);
+function clearedSessionCookie(secure: boolean): string {
+  return `${SESSION_COOKIE}=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/${secure ? '; Secure' : ''}`;
+}
+
+function authService(): AuthService {
+  return new AuthService(getDb());
+}
+
+function authErrorResponse(res: express.Response, error: unknown): void {
+  if (error instanceof AuthError) {
+    res.status(error.status).json({ error: error.message, code: error.code });
+    return;
+  }
+  logger.error(`Authentication failed: ${error instanceof Error ? error.message : String(error)}`);
+  res.status(500).json({ error: 'Authentication failed.' });
+}
+
+app.get('/login', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  const user = authService().resolveSession(requestCookies(req)[SESSION_COOKIE]);
+  if (user) {
+    res.redirect('/');
+    return;
+  }
+  res.render('login');
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const { username, password, setupToken } = (req.body || {}) as {
+    username?: unknown;
+    password?: unknown;
+    setupToken?: unknown;
+  };
+  try {
+    const service = authService();
+    const user = setupToken === undefined
+      ? await service.register(username, password)
+      : await service.claimWithSetupToken(username, password, setupToken);
+    const session = service.createSession(user.id);
+    res.setHeader('Set-Cookie', [sessionCookie(session.token, req.secure), clearedSessionCookie(req.secure).replace(SESSION_COOKIE, 'active_user')]);
+    res.status(201).json({ ok: true, user });
+  } catch (error: unknown) {
+    authErrorResponse(res, error);
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = (req.body || {}) as { username?: unknown; password?: unknown };
+  try {
+    const service = authService();
+    const user = await service.authenticate(username, password);
+    const session = service.createSession(user.id);
+    res.setHeader('Set-Cookie', [sessionCookie(session.token, req.secure), clearedSessionCookie(req.secure).replace(SESSION_COOKIE, 'active_user')]);
+    res.json({ ok: true, user });
+  } catch (error: unknown) {
+    authErrorResponse(res, error);
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  authService().revokeSession(requestCookies(req)[SESSION_COOKIE]);
+  res.setHeader('Set-Cookie', clearedSessionCookie(req.secure));
+  res.json({ ok: true });
+});
+
+// Web requests require a credential-backed session. The process-global user
+// context remains available only to CLI commands.
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const user = authService().resolveSession(requestCookies(req)[SESSION_COOKIE]);
+  if (!user) {
+    if (req.path.startsWith('/api/')) {
+      res.status(401).json({ error: 'Authentication required.' });
+    } else {
+      res.redirect('/login');
+    }
+    return;
   }
 
+  res.locals.userId = user.id;
+  res.locals.userName = user.username;
+  res.locals.activeUser = user.username;
+  res.locals.activeUserId = user.id;
+
   next();
+});
+
+// Serve only the two user-facing PDF artifacts after verifying job ownership.
+// Never expose the local/resumes root as a static directory.
+app.get('/resumes/:jobId/:artifact', (req, res) => {
+  const jobId = Number(req.params.jobId);
+  const artifact = req.params.artifact;
+  const userId = res.locals.userId;
+  if (!Number.isInteger(jobId) || jobId < 1 || !['resume.pdf', 'cover-letter.pdf'].includes(artifact)) {
+    res.status(404).send('Artifact not found');
+    return;
+  }
+
+  const db = getDb();
+  const owned = db.prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId);
+  if (!owned) {
+    res.status(404).send('Artifact not found');
+    return;
+  }
+
+  const ownedRoot = path.resolve(RESUMES_DIR, String(jobId));
+  let filePath: string;
+  let expectedSha256: string | undefined;
+  if (artifact === 'resume.pdf') {
+    const version = db.prepare(`
+      SELECT rv.id, rv.pdf_path, a.sha256 FROM resume_versions rv
+      JOIN resume_drafts rd ON rd.id = rv.draft_id AND rd.status = 'rendered'
+      JOIN artifacts a ON a.resume_version_id = rv.id
+        AND a.artifact_type = 'pdf' AND a.path = rv.pdf_path
+      WHERE rv.job_id = ? AND rv.user_id = ? AND rv.pdf_path IS NOT NULL
+      ORDER BY rv.id DESC, a.id DESC LIMIT 1
+    `).get(jobId, userId) as { id: number; pdf_path: string; sha256: string } | undefined;
+    if (!version) {
+      res.status(404).send('Artifact not found');
+      return;
+    }
+    filePath = path.resolve(version.pdf_path);
+    expectedSha256 = version.sha256;
+  } else {
+    filePath = path.resolve(ownedRoot, artifact);
+  }
+
+  const relativePath = path.relative(ownedRoot, filePath);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath) || !existsSync(filePath)) {
+    res.status(404).send('Artifact not found');
+    return;
+  }
+  if (artifact === 'resume.pdf') {
+    const actual = createHash('sha256').update(readFileSync(filePath)).digest('hex');
+    if (!expectedSha256 || expectedSha256 !== actual) {
+      res.status(409).send('Artifact integrity check failed');
+      return;
+    }
+  }
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.sendFile(filePath);
 });
 
 // ----- types ---------------------------------------------------------------
@@ -339,17 +510,19 @@ app.get('/jobs/:id', (req, res) => {
   // Load stage outputs for interactive pipeline.
   // Verify the PDF file actually exists on disk — the DB record may be stale
   // if files were cleaned up or pdflatex failed silently.
-  const resumeVersionRow = db.prepare(
-    "SELECT id, pdf_path, version_name, created_at FROM resume_versions WHERE job_id = ? AND pdf_path IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-  ).get(jobId) as { id: number | null; pdf_path: string | null; version_name: string | null; created_at: string | null } | undefined;
+  const resumeVersionRow = db.prepare(`
+    SELECT rv.id, rv.pdf_path, rv.version_name, rv.created_at
+    FROM resume_versions rv
+    JOIN resume_drafts rd ON rd.id = rv.draft_id AND rd.status = 'rendered'
+    WHERE rv.job_id = ? AND rv.user_id = ? AND rv.pdf_path IS NOT NULL
+    ORDER BY rv.created_at DESC LIMIT 1
+  `).get(jobId, userId) as { id: number | null; pdf_path: string | null; version_name: string | null; created_at: string | null } | undefined;
   const resumeVersion = resumeVersionRow?.pdf_path && existsSync(resumeVersionRow.pdf_path)
     ? resumeVersionRow
     : undefined;
 
-  // Clean up stale pdf_path entries where the file no longer exists on disk
-  if (resumeVersionRow?.pdf_path && !resumeVersion) {
-    db.prepare("UPDATE resume_versions SET pdf_path = NULL WHERE id = ?").run(resumeVersionRow.id);
-  }
+  // GET remains read-only. A missing artifact is displayed as stale and may be
+  // repaired by an explicit render/maintenance action.
 
   // Build descriptive download filenames: {FirstName}{LastName}_{Company}_{YYYY-MM-DD}_v{ver}.pdf
   let resumeDownloadName = 'resume.pdf';
@@ -574,13 +747,14 @@ app.get('/pipeline', (_req, res) => {
 
 app.get('/events', (req, res) => {
   const db = getDb();
+  const userId = res.locals.userId;
   const jobFilter = typeof req.query.job === 'string' ? Number(req.query.job) : null;
   const typeFilter = typeof req.query.type === 'string' ? req.query.type : null;
 
   let query = `SELECT e.*, j.title as job_title, j.company as job_company
     FROM events e LEFT JOIN jobs j ON e.job_id = j.id`;
-  const conditions: string[] = [];
-  const params: unknown[] = [];
+  const conditions: string[] = ['j.user_id = ?'];
+  const params: unknown[] = [userId];
 
   if (jobFilter && !Number.isNaN(jobFilter)) {
     conditions.push('e.job_id = ?');
@@ -602,9 +776,11 @@ app.get('/events', (req, res) => {
 
   const events = db.prepare(query).all(...params) as EventRow[];
 
-  const eventTypes = (db.prepare(
-    'SELECT DISTINCT event_type FROM events ORDER BY event_type',
-  ).all() as { event_type: string }[]).map((r) => r.event_type);
+  const eventTypes = (db.prepare(`
+    SELECT DISTINCT e.event_type
+    FROM events e JOIN jobs j ON j.id = e.job_id
+    WHERE j.user_id = ? ORDER BY e.event_type
+  `).all(userId) as { event_type: string }[]).map((r) => r.event_type);
 
   res.render('events', {
     title: 'Event Timeline',
@@ -617,9 +793,19 @@ app.get('/events', (req, res) => {
 // ----- routes: AI log -------------------------------------------------------
 
 app.get('/ai-log', (_req, res) => {
+  const userCount = (getDb().prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }).count;
+  if (userCount > 1) {
+    res.status(403).send('AI logs are disabled when multiple user profiles exist because legacy entries have no ownership metadata.');
+    return;
+  }
   const logDir = `${LOCAL_DIR}/logs`;
 
-  interface LogEntry { timestamp: string; operation: string; model: string; provider: string; requestSummary: string; responseSummary: string; totalTokens?: number; durationMs: number; success: boolean; time?: string; duration?: string; error?: string; }
+  interface LogEntry {
+    timestamp: string; operation: string; model: string; provider: string;
+    requestSummary: string; responseSummary: string; promptTokens?: number;
+    completionTokens?: number; cachedTokens?: number; totalTokens?: number;
+    durationMs: number; success: boolean; time?: string; duration?: string; error?: string;
+  }
 
   const entries: LogEntry[] = [];
   if (existsSync(logDir)) {
@@ -647,10 +833,10 @@ app.get('/ai-log', (_req, res) => {
     }
   }
 
-  const totalPrompt = entries.reduce((sum: number, e: any) => sum + (e.promptTokens || 0), 0);
-  const totalCompletion = entries.reduce((sum: number, e: any) => sum + (e.completionTokens || 0), 0);
-  const totalCached = entries.reduce((sum: number, e: any) => sum + (e.cachedTokens || 0), 0);
-  const operations = [...new Set(entries.map((e: any) => e.operation))].sort();
+  const totalPrompt = entries.reduce((sum, entry) => sum + (entry.promptTokens ?? 0), 0);
+  const totalCompletion = entries.reduce((sum, entry) => sum + (entry.completionTokens ?? 0), 0);
+  const totalCached = entries.reduce((sum, entry) => sum + (entry.cachedTokens ?? 0), 0);
+  const operations = [...new Set(entries.map((entry) => entry.operation))].sort();
 
   res.render('ai-log', {
     title: 'AI Call Log',
@@ -667,17 +853,20 @@ app.get('/ai-log', (_req, res) => {
 const PROFILE_LABELS: Record<string, { label: string; description: string }> = {
   candidate: { label: 'Candidate Profile', description: 'Work history, education, skills, links. The source of truth for resume tailoring.' },
   preferences: { label: 'Preferences', description: 'Job titles, locations, industries, deal-breakers, and scoring weights.' },
-  answers: { label: 'Application Answers', description: 'Standard application questions. Sensitive — never shared or uploaded.' },
 };
 
-type ProfileFile = 'candidate' | 'preferences' | 'answers';
+type ProfileFile = 'candidate' | 'preferences';
+type AiEditableProfileFile = 'preferences';
+
+export function profileAllowsExternalAiEdit(file: ProfileFile): file is AiEditableProfileFile {
+  return file === 'preferences';
+}
 
 /** Read a profile section from the database for a given user. */
 function readProfile(file: ProfileFile, userId: number): string {
   switch (file) {
     case 'candidate': return readCandidate(userId);
     case 'preferences': return readPreferences(userId);
-    case 'answers': return readAnswers(userId);
     default: return '';
   }
 }
@@ -695,7 +884,6 @@ app.get('/profile', (_req, res) => {
   const userId = res.locals.userId;
   const candidate = readProfile('candidate', userId);
   const prefs = readProfile('preferences', userId);
-  const answers = readProfile('answers', userId);
 
   res.render('profile', {
     title: 'Profile',
@@ -703,8 +891,6 @@ app.get('/profile', (_req, res) => {
     candidateSections: candidate ? getYamlSections(candidate) : [],
     prefsSize: prefs ? `${prefs.split('\n').length} lines` : 'Not found',
     prefsSections: prefs ? getYamlSections(prefs) : [],
-    answersSize: answers ? `${answers.split('\n').length} lines` : 'Not found',
-    answersSections: answers ? getYamlSections(answers) : [],
   });
 });
 
@@ -722,9 +908,10 @@ app.get('/profile/:file', (req, res) => {
     title: `${info.label} — Profile`,
     profileLabel: info.label,
     profileFile: file,
-    filePath: `Database: user_preferences.${file}`,
+    filePath: `Database: profile_revisions.${file}_json`,
     description: info.description,
     yamlRaw,
+    aiEditable: profileAllowsExternalAiEdit(file),
     yamlEscaped: yamlRaw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   });
 });
@@ -754,10 +941,63 @@ app.put('/api/profile/:file', (req, res) => {
   }
 });
 
+/**
+ * Build a domain-aware system prompt for AI-assisted profile editing.
+ *
+ * The old prompt was a generic "you are editing a YAML file" message that gave
+ * the LLM zero context about what makes a good resume bullet, what the sections
+ * mean, or how to make content more professional. This version gives the model
+ * concrete writing guidance tuned to each profile section.
+ */
+function buildProfileEditPrompt(file: AiEditableProfileFile): string {
+  const base = [
+    'You are editing a JobBot profile file. Return ONLY the complete updated YAML.',
+    'Keep everything that was not mentioned exactly as-is — structure, indentation, comments, and unrelated sections.',
+    'Do NOT add commentary. Do NOT wrap in markdown code fences. Just the raw YAML.',
+    'If the instruction is unclear, make your best guess and note it in a `# NOTE:` comment.',
+  ];
+
+  if (file === 'preferences') {
+    return [
+      ...base,
+      '',
+      '## What this file is',
+      'This is the scoring preferences file. It controls how jobs are scored and ranked against the candidate\'s criteria.',
+      '',
+      '## Sections',
+      '- `preferred_titles`: job titles the candidate is targeting. Use realistic, searchable title strings.',
+      '- `preferred_locations`: remote preference and target cities. Cities should be lowercase, within commuting distance.',
+      '- `allowed_countries`: countries where the candidate can legally work.',
+      '- `preferred_companies`: specific companies of interest (can be empty).',
+      '- `preferred_industries`: industries the candidate wants to work in. Keep these broad enough to match real job postings.',
+      '- `deal_breakers`: keywords or phrases that should auto-reject a job. Include description and keywords list.',
+      '- `weights`: scoring weights for each dimension — must sum to 1.0. Higher weight = more important.',
+      '- `tiers`: score thresholds for A/B/C/D tiers.',
+      '- `us_citizenship_bonus`: small score boost for US-citizen-only roles (0.00–0.05).',
+      '',
+      '## Rules',
+      '- Titles should match how jobs are actually posted (e.g., "leasing agent" not "Leasing Superstar").',
+      '- Cities should be within reasonable commute of the candidate\'s location.',
+      '- Deal-breaker keywords should be specific enough to catch bad matches without false positives.',
+      '- If the user says what kind of role they want, pick industry labels that real job boards use.',
+    ].join('\n');
+  }
+
+
+  return base.join('\n');
+}
+
 app.post('/api/profile/:file/ai-edit', async (req, res) => {
   const file = req.params.file as ProfileFile;
   if (!(file in PROFILE_LABELS)) {
     res.status(400).json({ error: 'Invalid profile file' });
+    return;
+  }
+
+  if (!profileAllowsExternalAiEdit(file)) {
+    res.status(403).json({
+      error: 'AI editing is disabled for candidate evidence. Record candidate facts through the local interview or manual confirmation flow.',
+    });
     return;
   }
 
@@ -780,17 +1020,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
     return;
   }
 
-  const prompt = [
-    'You are editing a YAML configuration file. The user will give you an instruction.',
-    'Return ONLY the complete updated YAML — keep everything that was not mentioned exactly as-is.',
-    'Do NOT add commentary. Do NOT wrap in markdown code fences. Just the raw YAML.',
-    '',
-    'Rules:',
-    '- Only change what the user asks to change.',
-    '- Preserve all comments (# lines).',
-    '- Preserve all structure, indentation, and formatting.',
-    '- If the instruction is unclear, make your best guess and note it in a comment.',
-  ].join('\n');
+  const prompt = buildProfileEditPrompt(file);
 
   const requestBody = {
     model: getDeepseekModel(),
@@ -882,17 +1112,26 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
 app.post('/api/run', async (req, res) => {
   const manager = getPipelineManager();
   const userId = res.locals.userId;
-
-  // Check if THIS user already has a running pipeline (not global)
-  if (manager.isRunning(userId)) {
-    res.status(409).json({ error: 'Your pipeline is already running. Wait for it to finish or cancel it.' });
+  const { step, jobId } = (req.body || {}) as { step?: string; jobId?: number };
+  const validSteps = ['extract', 'score', 'compose', 'audit'] as const;
+  if (step && !validSteps.includes(step as typeof validSteps[number])) {
+    res.status(400).json({ error: 'Invalid pipeline step' });
     return;
   }
+  if (jobId !== undefined) {
+    const owned = getDb().prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId);
+    if (!Number.isInteger(jobId) || jobId < 1 || !owned) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+  }
 
-  const { step, jobId } = (req.body || {}) as { step?: string; jobId?: number };
-
-  // Get (or create) per-user pipeline state
-  const state = manager.get(userId);
+  const reservation = manager.reserve(userId, jobId ? 1 : Number.MAX_SAFE_INTEGER);
+  if (!reservation.allowed) {
+    res.status(409).json({ error: reservation.reason });
+    return;
+  }
+  const state = reservation.state;
 
   // Respond immediately with 202 Accepted
   res.status(202).json({ ok: true, message: 'Pipeline started' });
@@ -900,35 +1139,28 @@ app.post('/api/run', async (req, res) => {
   // Run in background (don't await — fire and update state)
   (async () => {
     try {
-      // Set the active user for the duration of this background pipeline.
-      setActiveUser(userId);
-
-      const { runExtract, runScore, runCompose, runAudit, runJob, runAll } = await import('../jobs/run.js');
-
-      // Start the pipeline tracker so the web UI sees running=true.
-      // runAll()/runJob() call startPipeline() internally, but the per-stage
-      // runners don't — startPipeline() is idempotent so double-call is safe.
-      state.startPipeline();
-
+      const context = appContextForUser(userId);
+      const concurrency = {
+        extract: Math.min(reservation.concurrency, getStageConcurrency('extract')),
+        score: Math.min(reservation.concurrency, getStageConcurrency('score')),
+        compose: Math.min(reservation.concurrency, getStageConcurrency('compose')),
+        audit: Math.min(reservation.concurrency, getStageConcurrency('audit')),
+      };
+      const service = createDefaultPipeline(context, {
+        progress: state,
+        concurrency,
+        log: (message) => logger.info(message),
+      });
       if (jobId) {
-        await runJob(jobId, state);
-      } else if (step === 'extract') {
-        await runExtract(5, state);
-      } else if (step === 'score') {
-        await runScore(3, state);
-      } else if (step === 'compose') {
-        await runCompose(2, state);
-      } else if (step === 'audit') {
-        await runAudit(2, state);
+        await service.runJob(jobId);
+      } else if (step) {
+        await service.runStage(step as import('../application/pipeline/types.js').PipelineStage);
       } else {
-        // Full pipeline
-        await runAll(state);
+        await service.runAll();
       }
     } catch (err) {
       logger.error('Pipeline run failed', err);
     } finally {
-      // Ensure the pipeline is marked finished even on error.
-      // runAll()/runJob() call finishPipeline() internally — idempotent.
       state.finishPipeline();
     }
   })();
@@ -1030,60 +1262,36 @@ app.post('/api/pipeline/tasks/:jobId/cancel', (req, res) => {
 // Run a single step for a specific job (non-blocking)
 app.post('/api/run/step', async (req, res) => {
   const { jobId, step } = (req.body || {}) as { jobId?: number; step?: string };
+  const userId = res.locals.userId;
 
-  if (!jobId || !step) {
-    res.status(400).json({ error: 'Requires jobId and step' });
+  if (!jobId || !step || !['extract', 'score', 'compose', 'audit'].includes(step)) {
+    res.status(400).json({ error: 'Requires jobId and a valid step' });
     return;
   }
+
+  const owned = getDb().prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId);
+  if (!owned) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  const manager = getPipelineManager();
+  const reservation = manager.reserve(userId, 1);
+  if (!reservation.allowed) {
+    res.status(409).json({ error: reservation.reason });
+    return;
+  }
+  const state = reservation.state;
 
   // Respond immediately
   res.status(202).json({ ok: true, message: `Running ${step} for job #${jobId}` });
 
-  // Run in background
   (async () => {
     try {
-      const { extractJob } = await import('../jobs/extract.js');
-      const { composeJob } = await import('../jobs/compose.js');
-      const { auditJob } = await import('../jobs/audit.js');
-
-      switch (step) {
-        case 'extract': {
-          const result = await extractJob(jobId);
-          logger.info(`Step extract for #${jobId}: ${result.success ? 'ok' : result.error}`);
-          break;
-        }
-        case 'score': {
-          const db = getDb();
-          const job = db.prepare('SELECT id, title, company, location, description FROM jobs WHERE id = ?').get(jobId) as any;
-          if (!job) break;
-          try {
-            const { scoreJobWithLLM } = await import('../jobs/scorers/llm.js');
-            const r = await scoreJobWithLLM(job);
-            db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
-              .run(r.score, r.tier, r.reason, jobId);
-            // Extract market data after scoring
-            const { extractMarketData: emdStep } = await import('../jobs/market-data.js');
-            emdStep(job as { id: number; title: string | null; location: string | null; description: string | null });
-          } catch (err) {
-            const { scoreJobDeterministic } = await import('../jobs/scorers/deterministic.js');
-            const prefs: any = { preferred_titles: [], preferred_locations: { remote: false, cities: [] }, preferred_companies: [], preferred_industries: [], deal_breakers: { description: '', keywords: [] }, weights: {}, tiers: { A: 0.8, B: 0.65, C: 0.5, D: 0 } };
-            const fallback = scoreJobDeterministic(job, prefs);
-            db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
-              .run(fallback.score, fallback.tier, fallback.reason, jobId);
-          }
-          break;
-        }
-        case 'compose': {
-          await composeJob(jobId);
-          break;
-        }
-        case 'audit': {
-          await auditJob(jobId);
-          break;
-        }
-      }
+      await createDefaultPipeline(appContextForUser(userId), { progress: state, log: (message) => logger.info(message) })
+        .runJobStage(jobId, step as import('../application/pipeline/types.js').PipelineStage);
     } catch (err) {
       logger.error(`Step ${step} for #${jobId} failed`, err);
+      state.finishPipeline();
     }
   })();
 });
@@ -1092,15 +1300,22 @@ app.post('/api/run/step', async (req, res) => {
 
 app.post('/api/jobs/:id/cover-letter', async (req, res) => {
   const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
   const { tone } = (req.body || {}) as { tone?: string };
   const validTones = ['professional', 'enthusiastic', 'concise'] as const;
   const resolvedTone = tone && validTones.includes(tone as typeof validTones[number])
     ? (tone as typeof validTones[number])
     : 'professional';
 
+  if (!Number.isInteger(jobId) || jobId < 1
+    || !getDb().prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId)) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+
   try {
     const { generateCoverLetter } = await import('../jobs/cover-letter.js');
-    const result = await generateCoverLetter(jobId, resolvedTone);
+    const result = await generateCoverLetter(jobId, resolvedTone, undefined, userId);
     if (result.success) {
       res.json({ ok: true, pdfPath: result.pdfPath, tone: resolvedTone });
     } else {
@@ -1115,6 +1330,7 @@ app.post('/api/jobs/:id/cover-letter', async (req, res) => {
 
 app.post('/api/jobs/:id/regenerate', async (req, res) => {
   const jobId = Number(req.params.id);
+  const userId = res.locals.userId;
   const { step, instruction } = (req.body || {}) as { step?: string; instruction?: string };
 
   if (!step || !['extract','score','compose','audit'].includes(step)) {
@@ -1123,8 +1339,14 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
   }
 
   const db = getDb();
-  const job = db.prepare('SELECT id, status FROM jobs WHERE id = ?').get(jobId) as { id: number; status: string } | undefined;
+  const job = db.prepare('SELECT id, status FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as { id: number; status: string } | undefined;
   if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
+
+  const reservation = getPipelineManager().reserve(userId, 1);
+  if (!reservation.allowed) {
+    res.status(409).json({ error: reservation.reason });
+    return;
+  }
 
   // Reset status to before the selected step
   const statusBefore: Record<string, string> = {
@@ -1135,15 +1357,26 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
   };
 
   const newStatus = statusBefore[step]!;
-  if (step === 'extract') {
-    db.prepare('UPDATE jobs SET title=NULL, company=NULL, location=NULL, description=NULL, apply_url=NULL, status=?, updated_at=datetime(\'now\') WHERE id=?').run(newStatus, jobId);
-  } else {
-    db.prepare("UPDATE jobs SET status=?, updated_at=datetime('now') WHERE id=?").run(newStatus, jobId);
+  try {
+    if (step === 'extract') {
+      db.prepare(`UPDATE jobs SET title=NULL, company=NULL, location=NULL, description=NULL, apply_url=NULL,
+        score=NULL, tier=NULL, score_reason=NULL, status=?, updated_at=datetime('now')
+        WHERE id=? AND user_id=?`).run(newStatus, jobId, userId);
+      db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+    } else if (step === 'score') {
+      db.prepare(`UPDATE jobs SET score=NULL, tier=NULL, score_reason=NULL, status=?, updated_at=datetime('now')
+        WHERE id=? AND user_id=?`).run(newStatus, jobId, userId);
+      db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+    } else {
+      db.prepare("UPDATE jobs SET status=?, updated_at=datetime('now') WHERE id=? AND user_id=?").run(newStatus, jobId, userId);
+    }
+    db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'regenerate', ?, datetime('now'))")
+      .run(jobId, `Regenerate ${step}${instruction ? ': ' + instruction : ''}`);
+  } catch (error) {
+    reservation.state.finishPipeline();
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
   }
-
-  // Log event
-  db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'regenerate', ?, datetime('now'))")
-    .run(jobId, `Regenerate ${step}${instruction ? ': ' + instruction : ''}`);
 
   // Respond immediately
   res.status(202).json({ ok: true, message: `Regenerating ${step} for job #${jobId}` });
@@ -1151,50 +1384,17 @@ app.post('/api/jobs/:id/regenerate', async (req, res) => {
   // Run in background
   (async () => {
     try {
-      const { extractJob } = await import('../jobs/extract.js');
-      const { composeJob } = await import('../jobs/compose.js');
-      const { auditJob } = await import('../jobs/audit.js');
-
-      switch (step) {
-        case 'extract': {
-          await extractJob(jobId);
-          break;
-        }
-        case 'score': {
-          const j = db.prepare('SELECT id, title, company, location, description FROM jobs WHERE id=?').get(jobId) as any;
-          if (!j) break;
-          try {
-            const { scoreJobWithLLM } = await import('../jobs/scorers/llm.js');
-            const r = instruction
-              ? await scoreJobWithLLM(j, instruction)
-              : await scoreJobWithLLM(j);
-            db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
-              .run(r.score, r.tier, r.reason, jobId);
-            const { extractMarketData: emdRegen } = await import('../jobs/market-data.js');
-            emdRegen(j as { id: number; title: string | null; location: string | null; description: string | null });
-          } catch (err) {
-            const { scoreJobDeterministic } = await import('../jobs/scorers/deterministic.js');
-            const prefs: any = { preferred_titles: [], preferred_locations: {remote:false,cities:[]}, preferred_companies: [], preferred_industries: [], deal_breakers: {description:'',keywords:[]}, weights: {}, tiers: {A:0.8,B:0.65,C:0.5,D:0} };
-            const fallback = scoreJobDeterministic(j, prefs);
-            db.prepare("UPDATE jobs SET score=?, tier=?, score_reason=?, status='scored', updated_at=datetime('now') WHERE id=?")
-              .run(fallback.score, fallback.tier, fallback.reason, jobId);
-          }
-          break;
-        }
-        case 'compose': {
-          await composeJob(jobId);
-          break;
-        }
-        case 'audit': {
-          await auditJob(jobId);
-          break;
-        }
-      }
+      await createDefaultPipeline(appContextForUser(userId), {
+        progress: reservation.state,
+        scoreInstruction: instruction,
+        log: (message) => logger.info(message),
+      }).runJobStage(jobId, step as import('../application/pipeline/types.js').PipelineStage);
       // Write event on success
       db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, ?, ?, datetime('now'))")
         .run(jobId, `regenerate_${step}_done`, `Regenerated ${step}${instruction ? ' with instruction: ' + instruction : ''}`);
     } catch (err) {
       logger.error(`Regenerate ${step} for #${jobId} failed`, err);
+      reservation.state.finishPipeline();
     }
   })();
 });
@@ -1223,211 +1423,54 @@ app.post('/api/jobs/:id/run-from', async (req, res) => {
     return;
   }
 
-  // Concurrency guard: one pipeline per user at a time
-  const manager = getPipelineManager();
-  if (manager.isRunning(userId)) {
-    res.status(409).json({ error: 'You already have a running pipeline. Wait for it to finish or cancel it first.' });
-    return;
-  }
-
   const job = db.prepare('SELECT id, status, score FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as
     { id: number; status: string; score: number | null } | undefined;
   if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
 
-  // Reset DB to before the target stage
-  if (stage === 'extract') {
-    db.prepare(`UPDATE jobs SET title=NULL, company=NULL, location=NULL, description=NULL, apply_url=NULL,
-                score=NULL, tier=NULL, score_reason=NULL, status='new',
-                updated_at=datetime('now') WHERE id=?`).run(jobId);
-    // Also clear user_scores for this job
-    db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
-  } else if (stage === 'score') {
-    db.prepare(`UPDATE jobs SET score=NULL, tier=NULL, score_reason=NULL, status='extracted',
-                updated_at=datetime('now') WHERE id=?`).run(jobId);
-    db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
-  } else if (stage === 'compose') {
-    db.prepare(`UPDATE jobs SET status='scored', updated_at=datetime('now') WHERE id=?`).run(jobId);
-  } else if (stage === 'audit') {
-    db.prepare(`UPDATE jobs SET status='composed', updated_at=datetime('now') WHERE id=?`).run(jobId);
+  const manager = getPipelineManager();
+  const reservation = manager.reserve(userId, 1);
+  if (!reservation.allowed) {
+    res.status(409).json({ error: reservation.reason });
+    return;
   }
 
-  // Log event
-  db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'run_from', ?, datetime('now'))")
-    .run(jobId, `Restart pipeline from ${stage}`);
+  try {
+    if (stage === 'extract') {
+      db.prepare(`UPDATE jobs SET title=NULL, company=NULL, location=NULL, description=NULL, apply_url=NULL,
+                  score=NULL, tier=NULL, score_reason=NULL, status='new',
+                  updated_at=datetime('now') WHERE id=? AND user_id=?`).run(jobId, userId);
+      db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+    } else if (stage === 'score') {
+      db.prepare(`UPDATE jobs SET score=NULL, tier=NULL, score_reason=NULL, status='extracted',
+                  updated_at=datetime('now') WHERE id=? AND user_id=?`).run(jobId, userId);
+      db.prepare('DELETE FROM user_scores WHERE job_id = ? AND user_id = ?').run(jobId, userId);
+    } else if (stage === 'compose') {
+      db.prepare(`UPDATE jobs SET status='scored', updated_at=datetime('now') WHERE id=? AND user_id=?`).run(jobId, userId);
+    } else if (stage === 'audit') {
+      db.prepare(`UPDATE jobs SET status='composed', updated_at=datetime('now') WHERE id=? AND user_id=?`).run(jobId, userId);
+    }
+    db.prepare("INSERT INTO events (job_id, event_type, description, created_at) VALUES (?, 'run_from', ?, datetime('now'))")
+      .run(jobId, `Restart pipeline from ${stage}`);
+  } catch (error) {
+    reservation.state.finishPipeline();
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
 
   // Respond immediately
   res.status(202).json({ ok: true, message: `Restarting pipeline from ${stage} for job #${jobId}` });
 
   // Run this single job through the pipeline in background
-  const pipelineState = manager.get(userId);
-  const pipelineUserId = userId;
+  const pipelineState = reservation.state;
 
   (async () => {
     try {
-      setActiveUser(pipelineUserId);
-      const { extractJob: runFromExtract } = await import('../jobs/extract.js');
-      const { composeJob: runFromCompose } = await import('../jobs/compose.js');
-      const { auditJob: runFromAudit } = await import('../jobs/audit.js');
-      const { extractMarketData } = await import('../jobs/market-data.js');
-      const MAX_AUDIT_RETRIES = 3;
-
-      const stageOrder = ['extract', 'score', 'compose', 'audit'] as const;
-      const startIdx = stageOrder.indexOf(stage as typeof stageOrder[number]);
-
-      pipelineState.startPipeline();
-      for (let i = startIdx; i < stageOrder.length; i++) {
-        const s = stageOrder[i]!;
-        pipelineState.startStage(s, 1);
-      }
-
-      // Helper: get current job row after each stage
-      const getJob = () => db.prepare(
-        'SELECT id, title, company, location, description, score, tier, status FROM jobs WHERE id = ?',
-      ).get(jobId) as {
-        id: number; title: string | null; company: string | null; location: string | null;
-        description: string | null; score: number | null; tier: string | null; status: string;
-      } | undefined;
-
-      // --- Extract ---
-      if (startIdx <= 0) {
-        const ctrl = pipelineState.taskStarted('extract', jobId);
-        try {
-          const result = await runFromExtract(jobId, ctrl.signal);
-          if (result.success) {
-            console.log(`  ✓ run-from #${jobId} extract: "${result.title}" at ${result.company}`);
-            pipelineState.updateTaskMeta('extract', jobId, { title: result.title, company: result.company });
-            pipelineState.taskCompleted('extract', jobId);
-          } else {
-            console.log(`  ✕ run-from #${jobId} extract: ${result.error}`);
-            pipelineState.taskFailed('extract', jobId);
-            pipelineState.finishPipeline();
-            return;
-          }
-        } catch (err: any) {
-          if (err?.name === 'AbortError' || ctrl.signal.aborted) {
-            pipelineState.taskCancelled('extract', jobId);
-          } else {
-            pipelineState.taskFailed('extract', jobId);
-          }
-          pipelineState.finishPipeline();
-          return;
-        }
-      }
-
-      // --- Score ---
-      if (startIdx <= 1) {
-        const jobRow = getJob();
-        if (!jobRow) { pipelineState.finishPipeline(); return; }
-        const ctrl = pipelineState.taskStarted('score', jobId, { title: jobRow.title ?? undefined, company: jobRow.company ?? undefined });
-        try {
-          const { scoreJobWithLLM: llmScore } = await import('../jobs/scorers/llm.js');
-          const scoreResult = await llmScore(jobRow, undefined, ctrl.signal);
-          db.prepare(
-            "UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?",
-          ).run(scoreResult.score, scoreResult.tier, scoreResult.reason, jobId);
-          db.prepare(
-            "INSERT INTO user_scores (job_id, user_id, score, tier, score_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(job_id, user_id) DO UPDATE SET score = excluded.score, tier = excluded.tier, score_reason = excluded.score_reason, updated_at = datetime('now')",
-          ).run(jobId, pipelineUserId, scoreResult.score, scoreResult.tier, scoreResult.reason);
-          console.log(`  ✓ run-from #${jobId} score: ${scoreResult.tier} (${scoreResult.score.toFixed(2)})`);
-          pipelineState.taskCompleted('score', jobId);
-          extractMarketData(jobRow);
-        } catch (err: any) {
-          if (err?.name === 'AbortError' || ctrl.signal.aborted) {
-            pipelineState.taskCancelled('score', jobId);
-            pipelineState.finishPipeline();
-            return;
-          }
-          logger.error(`run-from score #${jobId}: ${err?.message || err}`);
-          const { scoreJobDeterministic: detScore } = await import('../jobs/scorers/deterministic.js');
-          const prefs: any = { preferred_titles: [], preferred_locations: { remote: false, cities: [] }, preferred_companies: [], preferred_industries: [], deal_breakers: { description: '', keywords: [] }, weights: {}, tiers: { A: 0.8, B: 0.65, C: 0.5, D: 0 } };
-          const fallback = detScore(jobRow, prefs);
-          db.prepare("UPDATE jobs SET score = ?, tier = ?, score_reason = ?, status = 'scored', updated_at = datetime('now') WHERE id = ?").run(fallback.score, fallback.tier, fallback.reason, jobId);
-          db.prepare("INSERT INTO user_scores (job_id, user_id, score, tier, score_reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(job_id, user_id) DO UPDATE SET score = excluded.score, tier = excluded.tier, score_reason = excluded.score_reason, updated_at = datetime('now')").run(jobId, pipelineUserId, fallback.score, fallback.tier, fallback.reason);
-          console.log(`  ⚠ run-from #${jobId} score fallback: ${fallback.tier}`);
-          pipelineState.taskCompleted('score', jobId);
-        }
-      }
-
-      // --- Compose + Audit loop ---
-      if (startIdx <= 2) {
-        const jobRow = getJob();
-        if (!jobRow) { pipelineState.finishPipeline(); return; }
-        // Note: no tier gate here — this is a manual user action.
-        // The automatic pipeline filters tiers; manual re-compose should always work.
-
-        const meta = { title: jobRow.title ?? undefined, company: jobRow.company ?? undefined };
-
-        for (let attempt = 0; attempt < MAX_AUDIT_RETRIES; attempt++) {
-          const current = getJob();
-          if (!current) break;
-
-          // Compose
-          const composeCtrl = pipelineState.taskStarted('compose', jobId, meta);
-          try {
-            const composeResult = await runFromCompose(jobId, undefined, composeCtrl.signal, { fixLatex });
-            if (composeResult.success) {
-              console.log(`  ✓ run-from #${jobId} compose: ${composeResult.pdfPath}`);
-              pipelineState.taskCompleted('compose', jobId);
-            } else {
-              console.log(`  ✕ run-from #${jobId} compose: ${composeResult.error}`);
-              pipelineState.taskFailed('compose', jobId);
-              pipelineState.finishPipeline();
-              return;
-            }
-          } catch (err: any) {
-            if (err?.name === 'AbortError' || composeCtrl.signal.aborted) {
-              pipelineState.taskCancelled('compose', jobId);
-            } else {
-              pipelineState.taskFailed('compose', jobId);
-            }
-            pipelineState.finishPipeline();
-            return;
-          }
-
-          // Audit (if at this stage)
-          if (startIdx <= 3) {
-            const afterCompose = getJob();
-            if (afterCompose?.status === 'audited') {
-              console.log(`  - run-from #${jobId} audit: already audited, skipping`);
-              pipelineState.finishPipeline();
-              return;
-            }
-            if (afterCompose?.status !== 'composed') break;
-
-            const auditCtrl = pipelineState.taskStarted('audit', jobId, meta);
-            try {
-              const auditResult = await runFromAudit(jobId, auditCtrl.signal);
-              if (!auditResult.success) {
-                console.log(`  ✕ run-from #${jobId} audit: ${auditResult.error}`);
-                pipelineState.taskFailed('audit', jobId);
-                pipelineState.finishPipeline();
-                return;
-              }
-              const currentStatus = getJob();
-              if (currentStatus?.status === 'audited') {
-                console.log(`  ✓ run-from #${jobId} audit: PASSED (${auditResult.overallScore}/100)`);
-                pipelineState.taskCompleted('audit', jobId);
-                pipelineState.finishPipeline();
-                return;
-              }
-              console.log(`  ↻ run-from #${jobId} audit: FAILED — re-composing...`);
-              pipelineState.taskCompleted('audit', jobId);
-            } catch (err: any) {
-              if (err?.name === 'AbortError') {
-                pipelineState.taskCancelled('audit', jobId);
-              } else {
-                pipelineState.taskFailed('audit', jobId);
-              }
-              pipelineState.finishPipeline();
-              return;
-            }
-          }
-        }
-        console.log(`  ✕ run-from #${jobId}: audit gave up after ${MAX_AUDIT_RETRIES} attempts`);
-      }
-
-      pipelineState.finishPipeline();
-      console.log(`\n=== run-from #${jobId} complete ===`);
+      await createDefaultPipeline(appContextForUser(userId), {
+        progress: pipelineState,
+        fixLatex,
+        log: (message) => logger.info(message),
+      }).runJobFrom(jobId, stage as import('../application/pipeline/types.js').PipelineStage);
+      logger.info(`run-from #${jobId} complete`);
     } catch (err) {
       logger.error(`run-from #${jobId} failed`, err);
       pipelineState.finishPipeline();
@@ -1449,7 +1492,7 @@ app.post('/api/jobs/add-urls', (req, res) => {
       return { url, error: 'Invalid URL', added: false };
     }
     try {
-      const r = addUrl(url.trim());
+      const r = addUrl(url.trim(), res.locals.userId);
       return {
         url: r.url,
         id: r.id,
@@ -1473,15 +1516,15 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
   const manager = getPipelineManager();
   const userId = res.locals.userId;
 
-  // Check if THIS user already has a running pipeline
-  if (manager.isRunning(userId)) {
-    res.status(409).json({ error: 'Your pipeline is already running. Wait for it to finish or cancel it.' });
-    return;
-  }
-
   const { urls } = (req.body || {}) as { urls?: string[] };
   if (!urls || !Array.isArray(urls) || urls.length === 0) {
     res.status(400).json({ error: 'Missing urls array in request body' });
+    return;
+  }
+
+  const reservation = manager.reserve(userId, urls.length);
+  if (!reservation.allowed) {
+    res.status(409).json({ error: reservation.reason });
     return;
   }
 
@@ -1490,7 +1533,7 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
       return { url, error: 'Invalid URL', added: false };
     }
     try {
-      const r = addUrl(url.trim());
+      const r = addUrl(url.trim(), userId);
       return {
         url: r.url,
         id: r.id,
@@ -1518,17 +1561,17 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
   });
 
   // Get per-user pipeline state and capture userId before going async
-  const pipelineState = manager.get(userId);
+  const pipelineState = reservation.state;
   const pipelineUserId = userId;
 
   // Run full pipeline in background
   (async () => {
     try {
-      setActiveUser(pipelineUserId);
       const { runAll } = await import('../jobs/run.js');
-      await runAll(pipelineState);
+      await runAll(pipelineState, appContextForUser(pipelineUserId));
     } catch (err) {
       logger.error('Pipeline run failed', err);
+      pipelineState.finishPipeline();
     }
   })();
 });
@@ -1536,34 +1579,40 @@ app.post('/api/jobs/add-urls-and-run', async (req, res) => {
 // ----- routes: schedule API ------------------------------------------------
 
 app.post('/api/schedule/start', async (req, res) => {
+  const userId = res.locals.userId;
   const { interval } = (req.body || {}) as { interval?: number };
-  if (!interval || typeof interval !== 'number' || interval < 1) {
+  if (typeof interval !== 'number' || !Number.isFinite(interval) || interval < 1) {
     res.status(400).json({ error: 'Requires interval in minutes (>= 1)' });
     return;
   }
   try {
     const { startSchedule: ss } = await import('../jobs/schedule.js');
-    ss(interval);
-    res.json({ ok: true, message: `Scheduled every ${interval} minute(s)` });
+    const started = ss(interval, appContextForUser(userId));
+    if (!started) {
+      res.status(409).json({ error: 'A schedule is already active for this user.' });
+      return;
+    }
+    res.json({ ok: true, userId, message: `Scheduled every ${interval} minute(s)` });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
 app.post('/api/schedule/stop', async (_req, res) => {
+  const userId = res.locals.userId;
   try {
     const { stopSchedule: ssStop } = await import('../jobs/schedule.js');
-    ssStop();
-    res.json({ ok: true });
+    res.json({ ok: true, userId, stopped: ssStop(userId) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
 app.get('/api/schedule/status', async (_req, res) => {
+  const userId = res.locals.userId;
   try {
     const { isScheduleActive } = await import('../jobs/schedule.js');
-    res.json({ active: isScheduleActive() });
+    res.json({ userId, active: isScheduleActive(userId) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -1629,7 +1678,7 @@ app.post('/api/jobs/:id/delete', (req, res) => {
   }
 
   try {
-    const result = deleteJob(jobId);
+    const result = deleteJob(jobId, res.locals.userId);
     res.json({ ok: true, deleted: result.deleted, job: result.jobs[0] });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1642,10 +1691,10 @@ app.post('/api/jobs/delete', (req, res) => {
 
   try {
     if (tier) {
-      const result = deleteByTier(tier);
+      const result = deleteByTier(tier, res.locals.userId);
       res.json({ ok: true, deleted: result.deleted });
     } else if (status) {
-      const result = deleteByStatus(status);
+      const result = deleteByStatus(status, res.locals.userId);
       res.json({ ok: true, deleted: result.deleted });
     } else {
       res.status(400).json({ error: 'Provide tier or status in request body' });
@@ -1654,43 +1703,6 @@ app.post('/api/jobs/delete', (req, res) => {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: msg });
   }
-});
-
-// ----- routes: user management API -----------------------------------------
-
-app.get('/api/users', (_req, res) => {
-  res.json({ users: listUsers(), active: res.locals.userName });
-});
-
-app.post('/api/users', (req, res) => {
-  const { name } = (req.body || {}) as { name?: string };
-  if (!name || typeof name !== 'string' || !name.trim()) {
-    res.status(400).json({ error: 'Missing user name' });
-    return;
-  }
-  const trimmed = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-  if (!trimmed) {
-    res.status(400).json({ error: 'Invalid user name' });
-    return;
-  }
-  const user = addUser(trimmed);
-  if (!user) {
-    res.status(409).json({ error: `User "${trimmed}" already exists` });
-    return;
-  }
-  logger.info(`Created user: ${trimmed}`);
-  res.json({ ok: true, user });
-});
-
-app.post('/api/users/switch', (req, res) => {
-  const { name } = (req.body || {}) as { name?: string };
-  if (!name) {
-    res.status(400).json({ error: 'Missing user name' });
-    return;
-  }
-  setActiveUser(name);
-  res.setHeader('Set-Cookie', `active_user=${getActiveUserName()}; Max-Age=${365 * 24 * 60 * 60}; HttpOnly; Path=/`);
-  res.json({ ok: true, active: getActiveUserName(), id: getActiveUserId() });
 });
 
 // ----- routes: application tracking API ------------------------------------
@@ -1710,13 +1722,30 @@ app.post('/api/jobs/:id/apply', (req, res) => {
     return;
   }
 
-  const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(jobId);
+  const job = db.prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId);
   if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
 
   const { status, notes, resumeVersionId } = (req.body || {}) as {
     status?: string; notes?: string; resumeVersionId?: number;
   };
   const newStatus = status || 'submitted';
+
+  if (resumeVersionId !== undefined) {
+    if (!Number.isInteger(resumeVersionId) || resumeVersionId < 1) {
+      res.status(400).json({ error: 'Invalid resumeVersionId' });
+      return;
+    }
+    const version = db.prepare(`
+      SELECT rv.id, rv.pdf_path
+      FROM resume_versions rv
+      JOIN resume_drafts rd ON rd.id = rv.draft_id AND rd.status = 'rendered'
+      WHERE rv.id = ? AND rv.job_id = ? AND rv.user_id = ? AND rv.pdf_path IS NOT NULL
+    `).get(resumeVersionId, jobId, userId) as { id: number; pdf_path: string } | undefined;
+    if (!version || !existsSync(version.pdf_path)) {
+      res.status(400).json({ error: 'Resume version is not a rendered artifact owned by this user and job.' });
+      return;
+    }
+  }
 
   // Upsert application
   const existing = db.prepare(
@@ -1727,8 +1756,8 @@ app.post('/api/jobs/:id/apply', (req, res) => {
     db.prepare(
       `UPDATE applications SET status = ?, notes = ?, submitted_at = COALESCE(submitted_at, datetime('now')),
        resume_version_id = COALESCE(?, resume_version_id),
-       updated_at = datetime('now') WHERE id = ?`,
-    ).run(newStatus, notes ?? null, resumeVersionId ?? null, existing.id);
+       updated_at = datetime('now') WHERE id = ? AND job_id = ? AND user_id = ?`,
+    ).run(newStatus, notes ?? null, resumeVersionId ?? null, existing.id, jobId, userId);
   } else {
     db.prepare(
       `INSERT INTO applications (job_id, user_id, status, submitted_at, notes, resume_version_id, created_at, updated_at)
@@ -1738,7 +1767,7 @@ app.post('/api/jobs/:id/apply', (req, res) => {
 
   // Update job status to 'applied' if submitting
   if (newStatus === 'submitted') {
-    db.prepare("UPDATE jobs SET status = 'applied', updated_at = datetime('now') WHERE id = ?").run(jobId);
+    db.prepare("UPDATE jobs SET status = 'applied', updated_at = datetime('now') WHERE id = ? AND user_id = ?").run(jobId, userId);
   }
 
   // Log event
@@ -1764,6 +1793,12 @@ app.post('/api/jobs/:id/response', (req, res) => {
     return;
   }
 
+  const ownedJob = db.prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId);
+  if (!ownedJob) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+
   const { responseType, notes } = (req.body || {}) as {
     responseType?: string; notes?: string;
   };
@@ -1782,8 +1817,8 @@ app.post('/api/jobs/:id/response', (req, res) => {
     db.prepare(
       `UPDATE applications SET status = 'responded', response_type = ?, responded_at = datetime('now'),
        notes = CASE WHEN ? IS NOT NULL THEN ? ELSE notes END,
-       updated_at = datetime('now') WHERE id = ?`,
-    ).run(responseType, notes ?? null, notes ?? null, existing.id);
+       updated_at = datetime('now') WHERE id = ? AND job_id = ? AND user_id = ?`,
+    ).run(responseType, notes ?? null, notes ?? null, existing.id, jobId, userId);
   } else {
     // Create application record if not exists
     db.prepare(
@@ -1809,6 +1844,12 @@ app.get('/api/jobs/:id/application', (req, res) => {
   const userId = res.locals.userId;
   const db = getDb();
 
+  if (!Number.isInteger(jobId) || jobId < 1
+    || !db.prepare('SELECT id FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId)) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+
   const app = db.prepare(
     'SELECT * FROM applications WHERE job_id = ? AND user_id = ?',
   ).get(jobId, userId) as {
@@ -1823,7 +1864,7 @@ app.get('/api/jobs/:id/application', (req, res) => {
 // ----- start ---------------------------------------------------------------
 
 export function startUi(port: number = PORT): void {
-  app.listen(port, () => {
+  app.listen(port, '127.0.0.1', () => {
     logger.info(`JobBot UI running at http://localhost:${port}`);
   });
 }

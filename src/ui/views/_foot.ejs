@@ -1,35 +1,11 @@
   </div><!-- .container -->
 <script>
-async function switchUser(name) {
-  const resp = await fetch('/api/users/switch', {
+async function logout() {
+  const resp = await fetch('/api/auth/logout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
   });
-  const data = await resp.json();
-  if (data.ok) window.location.reload();
-}
-function showAddUser() {
-  document.getElementById('add-user-dialog').style.display = 'flex';
-  document.getElementById('new-user-name').focus();
-}
-async function addUserSubmit() {
-  const input = document.getElementById('new-user-name');
-  const errEl = document.getElementById('add-user-error');
-  const name = input.value.trim();
-  if (!name) { errEl.textContent = 'Enter a user name'; errEl.style.display = 'block'; return; }
-  const resp = await fetch('/api/users', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  const data = await resp.json();
-  if (data.ok) {
-    await switchUser(data.user.name);
-  } else {
-    errEl.textContent = data.error || 'Failed';
-    errEl.style.display = 'block';
-  }
+  if (resp.ok) window.location.assign('/login');
 }
 </script>
 </body>

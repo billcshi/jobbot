@@ -1,5 +1,5 @@
 /**
- * Job Board Discovery — v0.5
+ * Job Board Discovery
  *
  * Searches job boards for postings matching a query. Supports:
  *   - LinkedIn: HTML scraping via cheerio

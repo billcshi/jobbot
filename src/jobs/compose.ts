@@ -6,15 +6,16 @@ import { jobResumeDir } from '../utils/paths.js';
 import { readCandidate } from '../utils/profile-store.js';
 import { getActiveUserId } from '../utils/user-context.js';
 import { logger } from '../utils/logger.js';
+import { throwIfAborted } from '../utils/abort.js';
 
 /**
  * Detect which resume variant to use based on job title keywords.
  * Reads available variants from the candidate profile.
  * Falls back to 'general' if no clear match or no variants defined.
  */
-function detectResumeVariant(jobId: number): string {
+function detectResumeVariant(jobId: number, userId: number): string {
   const db = getDb();
-  const job = db.prepare('SELECT title, description FROM jobs WHERE id = ?').get(jobId) as
+  const job = db.prepare('SELECT title, description FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as
     | { title: string | null; description: string | null }
     | undefined;
   if (!job?.title) return 'general';
@@ -25,7 +26,7 @@ function detectResumeVariant(jobId: number): string {
   // Try to load available variants from candidate profile
   let variants: string[] = [];
   try {
-    const candidateYaml = readCandidate(getActiveUserId());
+    const candidateYaml = readCandidate(userId);
     if (candidateYaml) {
       // Look for resume_variants: section
       const match = candidateYaml.match(/^resume_variants:\s*\n((?:\s+-\s+.+\n?)*)/m);
@@ -90,11 +91,13 @@ export interface ComposeResult {
  * @param jobId Job to compose for
  * @param variantName Optional resume variant name. Auto-selected from job title if not provided.
  */
-export async function composeJob(jobId: number, variantName?: string, signal?: AbortSignal, opts?: { fixLatex?: boolean }): Promise<ComposeResult> {
+export async function composeJob(jobId: number, variantName?: string, signal?: AbortSignal, opts?: { fixLatex?: boolean }, userId?: number): Promise<ComposeResult> {
+  throwIfAborted(signal);
+  const resolvedUserId = userId ?? getActiveUserId();
   const db = getDb();
 
   // Auto-select resume variant based on job title keywords
-  const resolvedVariant = variantName ?? detectResumeVariant(jobId);
+  const resolvedVariant = variantName ?? detectResumeVariant(jobId, resolvedUserId);
   if (resolvedVariant && resolvedVariant !== 'general') {
     logger.info(`Using resume variant: ${resolvedVariant} for job #${jobId}`);
   }
@@ -129,32 +132,28 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
     }
   }
 
-  // Extract visual issues from audit.json for LaTeX template fixing.
-  // Content issues go to tailor (YAML changes); visual issues go to render (LaTeX changes).
-  // Only when fixLatex is explicitly enabled (opt-in, via "Re-compose with TeX Fix" button).
-  const fixLatex = opts?.fixLatex === true;
-  let visualFeedback: string[] | undefined;
-  const auditJsonPath = `${jobResumeDir(jobId)}/audit.json`;
-  if (fixLatex && auditFeedback && existsSync(auditJsonPath)) {
-    try {
-      const auditJson = JSON.parse(readFileSync(auditJsonPath, 'utf-8'));
-      const visualIssues: Array<{ description: string; suggestion: string }> = auditJson.visualIssues || [];
-      if (visualIssues.length > 0) {
-        visualFeedback = visualIssues.map((v) => `${v.description} → ${v.suggestion}`);
-        console.log(`  👁 ${visualFeedback.length} visual issue(s) → will fix LaTeX template`);
-      }
-    } catch { /* ignore */ }
+  if (opts?.fixLatex === true) {
+    logger.warn('Automatic full-document LaTeX rewriting is disabled by the resume truth boundary.');
   }
 
   // Step 1: Customize (with optional audit feedback, previous output, variant, and version)
-  const tailorResult = await tailorJob(jobId, auditFeedback, resolvedVariant, signal, composeVersion, previousOutput);
+  const tailorResult = await tailorJob(jobId, auditFeedback, resolvedVariant, signal, composeVersion, previousOutput, resolvedUserId);
+  throwIfAborted(signal);
   if (!tailorResult.success) {
     return { success: false, jobId, error: `Customize failed: ${tailorResult.error}` };
   }
   console.log(`✓ Customized: ${tailorResult.versionName}${resolvedVariant && resolvedVariant !== 'general' ? ` (${resolvedVariant} variant)` : ''}`);
 
-  // Step 2: Render (with visual feedback for LaTeX fixes)
-  const renderResult = await renderJob(jobId, visualFeedback, composeVersion);
+  // Step 2: Render only canonical, validated content through the reviewed template.
+  const renderResult = await renderJob(
+    jobId,
+    undefined,
+    composeVersion,
+    resolvedUserId,
+    tailorResult.resumeVersionId,
+    signal,
+  );
+  throwIfAborted(signal);
   if (!renderResult.success) {
     return { success: false, jobId, error: `Render failed: ${renderResult.error}` };
   }
@@ -166,19 +165,24 @@ export async function composeJob(jobId: number, variantName?: string, signal?: A
   const v = composeVersion;
   const suffix = `-v${v}`;
   copyFileSync(`${dir}/tailored.yaml`, `${dir}/tailored${suffix}.yaml`);
-  copyFileSync(`${dir}/resume.tex`, `${dir}/resume${suffix}.tex`);
-  copyFileSync(`${dir}/resume.pdf`, `${dir}/resume${suffix}.pdf`);
+  if (!renderResult.texPath || !renderResult.pdfPath) {
+    return { success: false, jobId, error: 'Render succeeded without canonical artifact paths.' };
+  }
+  throwIfAborted(signal);
+  copyFileSync(renderResult.texPath, `${dir}/resume${suffix}.tex`);
+  copyFileSync(renderResult.pdfPath, `${dir}/resume${suffix}.pdf`);
   console.log(`  📁 Saved versioned copies as *${suffix}.* in ${dir}/`);
 
   // Set unified status
-  db.prepare(
-    "UPDATE jobs SET status = 'composed', updated_at = datetime('now') WHERE id = ?",
-  ).run(jobId);
-
-  // Log event
-  db.prepare(
-    "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'compose', ?, ?, datetime('now'))",
-  ).run(jobId, `PDF: ${renderResult.pdfPath}`, JSON.stringify({ pdfPath: renderResult.pdfPath }));
+  db.transaction(() => {
+    throwIfAborted(signal);
+    db.prepare(
+      "UPDATE jobs SET status = 'composed', updated_at = datetime('now') WHERE id = ? AND user_id = ?",
+    ).run(jobId, resolvedUserId);
+    db.prepare(
+      "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'compose', ?, ?, datetime('now'))",
+    ).run(jobId, `PDF: ${renderResult.pdfPath}`, JSON.stringify({ pdfPath: renderResult.pdfPath }));
+  })();
 
   return { success: true, jobId, pdfPath: renderResult.pdfPath };
 }

@@ -1,49 +1,79 @@
 import { getDb } from '../db/client.js';
 import { readFileSync } from 'node:fs';
 import { PROMPTS_DIR } from '../utils/paths.js';
-import { readCandidate } from '../utils/profile-store.js';
+import { readCandidate, readPreferences } from '../utils/profile-store.js';
 import { getActiveUserId } from '../utils/user-context.js';
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
+import { buildCandidateEvidence, evidencePromptContext } from '../domain/resume/evidence.js';
+import { parseProvenancedTailoredResumeData } from '../domain/resume/contract.js';
+import type { ProvenancedTailoredResumeData } from '../domain/resume/types.js';
+import { validateResume } from '../resume/validate.js';
+import { validateSemanticEntailment, type SemanticEntailmentResult } from '../resume/entailment.js';
+import {
+  extractJobRequirements,
+  storedRequirementsToDomain,
+} from './requirements.js';
+import yaml from 'js-yaml';
+import { createHash } from 'node:crypto';
+import { ProfileRepository } from '../repositories/profile-repository.js';
+import { JobKnowledgeRepository } from '../repositories/job-knowledge-repository.js';
+import { ResumeRepository, type ResumeClaimInput } from '../repositories/resume-repository.js';
+import { toJsonObject, type JsonObject } from '../domain/shared/json.js';
+import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
 
-const TAILOR_PROMPT = readFileSync(`${PROMPTS_DIR}/tailor-resume.md`, 'utf-8');
+const BASE_TAILOR_PROMPT = readFileSync(`${PROMPTS_DIR}/tailor-resume.md`, 'utf-8');
+
+function jsonObject(value: unknown, label: string): JsonObject {
+  return toJsonObject(JSON.parse(JSON.stringify(value)) as unknown, label);
+}
+
+/**
+ * Build a dynamic tailor prompt that adjusts highlight count requirements
+ * based on how many work experiences the candidate has.
+ *
+ * - 1 position → 6-8 highlights (go deep on the sole role)
+ * - 2 positions → 4-5 highlights each
+ * - 3+ positions → 3 highlights each (default)
+ */
+function buildTailorPrompt(candidateYaml: string): string {
+  let expCount = 3; // default assumption
+  try {
+    const parsed = yaml.load(candidateYaml) as { work_experience?: unknown[] } | undefined;
+    expCount = Array.isArray(parsed?.work_experience) ? parsed.work_experience.length : 3;
+  } catch { /* keep default */ }
+
+  const highlightPerPos = expCount <= 1 ? '6–8' : expCount <= 2 ? '4–5' : '3';
+  const minHighlights = expCount <= 1 ? '5' : '3';
+  const totalBullets = expCount <= 1 ? '7–9' : expCount <= 2 ? '8–10' : '9';
+  const posCount = expCount <= 1 ? 'all available' : expCount <= 2 ? 'all available' : '3';
+
+  let prompt = BASE_TAILOR_PROMPT;
+
+  // Replace the per-position highlight rule (line 27)
+  prompt = prompt.replace(
+    /-\s+\*\*Each position must have exactly 3 highlights\.\*\*[^\n]*/,
+    `- **Each position must have ${highlightPerPos} highlights.** Never leave a position with fewer than ${minHighlights}.`
+  );
+
+  // Replace the total bullet count constraint (line 36)
+  prompt = prompt.replace(
+    /-\s+Include \d+ positions with \d+ highlights each[^.]*\./,
+    `- Include ${posCount} positions with ${highlightPerPos} highlights each (${totalBullets} bullets total). Each bullet: 2-3 lines with rich, specific detail — what you did, how, the impact.`
+  );
+
+  return prompt;
+}
 
 export interface TailorResult {
   success: boolean;
   jobId: number;
   versionName?: string;
   summary?: string;
+  resumeVersionId?: number;
   error?: string;
-}
-
-interface LlmTailorOutput {
-  summary: string;
-  selected_experience: {
-    company: string;
-    title: string;
-    start: string;
-    end: string | null;
-    highlights: string[];
-  }[];
-  selected_skills: {
-    languages?: string[];
-    frameworks?: string[];
-    infrastructure?: string[];
-    databases?: string[];
-    data_processing?: string[];
-  };
-  keyword_adjustments?: {
-    original: string;
-    adjusted: string;
-    reason: string;
-  }[];
-  selected_projects?: {
-    name: string;
-    highlights: string[];
-    technologies: string[];
-  }[];
 }
 
 /**
@@ -63,13 +93,15 @@ interface LlmTailorOutput {
  *   When provided (retry), the LLM can see what it produced before and make
  *   targeted edits instead of starting from scratch.
  */
-export async function tailorJob(jobId: number, auditFeedback?: string, variant?: string, signal?: AbortSignal, version?: number, previousOutput?: string): Promise<TailorResult> {
+export async function tailorJob(jobId: number, auditFeedback?: string, variant?: string, signal?: AbortSignal, version?: number, previousOutput?: string, userId?: number): Promise<TailorResult> {
+  throwIfAborted(signal);
+  const resolvedUserId = userId ?? getActiveUserId();
   const db = getDb();
   const job = db.prepare(
-    'SELECT id, title, company, location, description FROM jobs WHERE id = ?',
-  ).get(jobId) as {
+    'SELECT id, url, apply_url, title, company, location, description FROM jobs WHERE id = ? AND user_id = ?',
+  ).get(jobId, resolvedUserId) as {
     id: number; title: string | null; company: string | null;
-    location: string | null; description: string | null;
+    url: string; apply_url: string | null; location: string | null; description: string | null;
   } | undefined;
 
   if (!job) {
@@ -88,9 +120,86 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   // Read candidate profile
   let candidateYaml: string;
   try {
-    candidateYaml = readCandidate(getActiveUserId());
+    candidateYaml = readCandidate(resolvedUserId);
   } catch {
     return { success: false, jobId, error: 'Candidate profile not found. Run init-db first.' };
+  }
+
+  let candidateProfile: unknown;
+  try {
+    candidateProfile = yaml.load(candidateYaml);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, jobId, error: `Candidate profile YAML is invalid: ${message}` };
+  }
+  const candidateEvidence = buildCandidateEvidence(candidateProfile);
+  if (candidateEvidence.claims.length === 0) {
+    return {
+      success: false,
+      jobId,
+      error: 'Candidate profile has no addressable experience, project, or skill evidence.',
+    };
+  }
+
+  // Freeze all generation inputs before calling the model. Files are artifacts;
+  // these immutable rows are the canonical provenance chain.
+  const profiles = new ProfileRepository(db);
+  let profileRevision = profiles.getActiveRevision(resolvedUserId);
+  if (!profileRevision) {
+    profileRevision = profiles.createRevision({
+      userId: resolvedUserId,
+      candidate: jsonObject(candidateProfile, 'candidate profile'),
+      preferences: jsonObject(yaml.load(readPreferences(resolvedUserId)) ?? {}, 'preferences'),
+      source: 'import',
+    });
+  }
+  const knowledge = new JobKnowledgeRepository(db);
+  const jobSnapshot = knowledge.captureSnapshot({
+    jobId,
+    userId: resolvedUserId,
+    sourceUrl: job.url,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    description: job.description,
+    applyUrl: job.apply_url,
+  });
+
+  // Requirements are extracted and frozen before the tailoring model sees the
+  // candidate. A tailoring response can reference them, but cannot define or
+  // replace them.
+  let frozenRequirements = storedRequirementsToDomain(knowledge.listRequirements(jobSnapshot.id));
+  if (frozenRequirements.length === 0) {
+    let extractedRequirements;
+    try {
+      extractedRequirements = await extractJobRequirements(jobSnapshot.description, {
+        apiKey,
+        signal,
+      });
+    } catch (error) {
+      rethrowAbort(error, signal);
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, jobId, error: `Requirement extraction failed: ${message}` };
+    }
+    throwIfAborted(signal);
+    // Atomic initialize-only persistence handles a concurrent run that may
+    // have frozen the snapshot while this extraction request was in flight.
+    knowledge.initializeRequirements(
+      jobSnapshot.id,
+      extractedRequirements.map((requirement, ordinal) => ({
+        key: requirement.id,
+        category: requirement.kind,
+        text: requirement.text,
+        importance: requirement.priority,
+        keywords: [],
+        ordinal,
+        sourceSpans: requirement.sourceSpans ?? [],
+      })),
+    );
+    frozenRequirements = storedRequirementsToDomain(knowledge.listRequirements(jobSnapshot.id));
+  }
+  if (frozenRequirements.length === 0) {
+    return { success: false, jobId, error: 'Requirement extraction produced no frozen requirements.' };
   }
 
   const jobInfo = [
@@ -132,6 +241,12 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     ].join('\n') : '',
     jobInfo,
     '',
+    '## Frozen Job Requirements (COPY EXACTLY; DO NOT ADD, REMOVE, OR EDIT)',
+    'These requirements were extracted in a separate stage before tailoring.',
+    '```json',
+    JSON.stringify(frozenRequirements, null, 2),
+    '```',
+    '',
     variant && variant !== 'general' ? [
       '## Resume Variant',
       `Use the "${variant}" resume variant. Focus on experience and skills relevant to ${variant} roles.`,
@@ -141,13 +256,22 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     '```yaml',
     candidateYaml,
     '```',
+    '',
+    '## Candidate Evidence (AUTHORITATIVE FOR ALL RESUME CLAIMS)',
+    'Use only the IDs and facts in this JSON when constructing claim provenance.',
+    '```json',
+    JSON.stringify(evidencePromptContext(candidateEvidence), null, 2),
+    '```',
   ].filter(Boolean).join('\n');
+
+  // Build dynamic system prompt based on candidate's experience count
+  const systemPrompt = buildTailorPrompt(candidateYaml);
 
   const thinking = getDeepseekThinking('customize');
   const requestBody: Record<string, unknown> = {
     model: getDeepseekModel(),
     messages: [
-      { role: 'system', content: TAILOR_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ],
     max_tokens: isRetry ? 32768 : 16384,  // more tokens for retries to allow thorough fixes
@@ -155,7 +279,8 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   if (thinking) requestBody['thinking'] = thinking;
 
   const startMs = Date.now();
-  let llmOutput: LlmTailorOutput;
+  let llmOutput: ProvenancedTailoredResumeData;
+  let semanticValidation: SemanticEntailmentResult;
 
   // Log prompt for debugging when version is provided
   if (version !== undefined) {
@@ -165,7 +290,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     mkdirSync(dir, { recursive: true });
     const promptDump = [
       '=== SYSTEM PROMPT ===',
-      TAILOR_PROMPT,
+      systemPrompt,
       '',
       '=== USER MESSAGE ===',
       userMessage,
@@ -197,7 +322,32 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response from DeepSeek');
 
-    llmOutput = parseLLMJson(content, `tailor job #${jobId}`) as LlmTailorOutput;
+    const parsedOutput = parseLLMJson(content, `tailor job #${jobId}`);
+    llmOutput = parseProvenancedTailoredResumeData(parsedOutput);
+    const truthValidation = validateResume(candidateProfile, llmOutput, {
+      requirements: frozenRequirements,
+    });
+    if (!truthValidation.valid) {
+      const details = truthValidation.issues
+        .slice(0, 10)
+        .map((item) => `${item.path}: ${item.message}`)
+        .join('; ');
+      const remaining = truthValidation.issues.length - 10;
+      const suffix = remaining > 0 ? `; plus ${remaining} more issue(s)` : '';
+      throw new Error(`Tailored resume failed truth validation: ${details}${suffix}`);
+    }
+    semanticValidation = await validateSemanticEntailment(candidateProfile, llmOutput, {
+      apiKey,
+      signal,
+    });
+    throwIfAborted(signal);
+    if (!semanticValidation.valid) {
+      const failed = semanticValidation.assessments
+        .filter((assessment) => assessment.verdict !== 'entailed')
+        .map((assessment) => `${assessment.verdict}: ${assessment.claim} — ${assessment.reason}`)
+        .join('; ');
+      throw new Error(`Tailored resume failed semantic entailment validation: ${failed}`);
+    }
     const usage = extractUsage(data as Record<string, unknown>);
 
     logAiCall({
@@ -212,6 +362,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
       success: true,
     });
   } catch (err) {
+    rethrowAbort(err, signal);
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Tailor LLM failed for job ${jobId}: ${msg}`);
     logAiCall({
@@ -226,11 +377,6 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
       error: msg,
     });
     return { success: false, jobId, error: msg };
-  }
-
-  // Validate output
-  if (!llmOutput.summary || !llmOutput.selected_experience || llmOutput.selected_experience.length === 0) {
-    return { success: false, jobId, error: 'LLM returned incomplete tailor data (missing summary or experience)' };
   }
 
   // Enforce reverse-chronological order (most recent first).
@@ -255,28 +401,93 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   });
 
   // Serialize to YAML for storage
-  const versionName = `tailored-v1-${Date.now()}`;
-  const yaml = await import('js-yaml');
+  const versionName = `tailored-v2-${Date.now()}`;
   const yamlData = yaml.dump(llmOutput);
 
-  // Store in resume_versions + tailored YAML
-  const { jobResumeDir } = await import('../utils/paths.js');
-  const texPath = `${jobResumeDir(jobId)}/resume.tex`;
-  db.prepare(
-    `INSERT OR REPLACE INTO resume_versions (job_id, version_name, tex_path, created_at)
-     VALUES (?, ?, ?, datetime('now'))`,
-  ).run(jobId, versionName, texPath);
-
-  // Note: status change to 'composed' is handled by compose.ts.
-  // When tailor is called standalone, we leave status as-is.
-  db.prepare(
-    "UPDATE jobs SET updated_at = datetime('now') WHERE id = ?",
-  ).run(jobId);
-
-  // Store the tailored YAML in local/resumes/
+  // Write the compatibility artifact first, then atomically record its
+  // canonical draft/version/provenance metadata.
   const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { jobResumeDir } = await import('../utils/paths.js');
   mkdirSync(jobResumeDir(jobId), { recursive: true });
-  writeFileSync(`${jobResumeDir(jobId)}/tailored.yaml`, yamlData, 'utf-8');
+  const tailoredPath = `${jobResumeDir(jobId)}/tailored.yaml`;
+  const texPath = `${jobResumeDir(jobId)}/resume.tex`;
+  throwIfAborted(signal);
+  writeFileSync(tailoredPath, yamlData, 'utf-8');
+
+  let canonicalResumeVersionId: number | undefined;
+  db.transaction(() => {
+    throwIfAborted(signal);
+    const resumes = new ResumeRepository(db);
+    const content = jsonObject(llmOutput, 'tailored resume');
+    const draft = resumes.createDraft({
+      jobId,
+      userId: resolvedUserId,
+      profileRevisionId: profileRevision.id,
+      jobSnapshotId: jobSnapshot.id,
+      plan: jsonObject({
+        requirements: frozenRequirements,
+        matches: llmOutput.match_plan,
+      }, 'resume plan'),
+      promptVersion: 'tailor-resume-v2',
+      model: getDeepseekModel(),
+    });
+    resumes.updateDraft(draft.id, 'validated', content);
+    const resumeVersionId = resumes.createVersion({
+      jobId,
+      userId: resolvedUserId,
+      draftId: draft.id,
+      profileRevisionId: profileRevision.id,
+      jobSnapshotId: jobSnapshot.id,
+      versionName,
+      texPath,
+      content,
+      promptVersion: 'tailor-resume-v2',
+      model: getDeepseekModel(),
+    });
+    canonicalResumeVersionId = resumeVersionId;
+
+    const sectionOrdinals = new Map<string, number>();
+    const claims: ResumeClaimInput[] = llmOutput.claim_provenance.map((provenance) => {
+      let section = 'summary';
+      const experienceIndex = llmOutput.selected_experience.findIndex((experience) => experience.highlights.includes(provenance.claim));
+      const projectIndex = (llmOutput.selected_projects ?? []).findIndex((project) => project.highlights.includes(provenance.claim));
+      if (experienceIndex >= 0) section = `experience:${experienceIndex}`;
+      else if (projectIndex >= 0) section = `project:${projectIndex}`;
+      const ordinal = sectionOrdinals.get(section) ?? 0;
+      sectionOrdinals.set(section, ordinal + 1);
+      return {
+        section,
+        ordinal,
+        renderedText: provenance.claim,
+        sourceClaimIds: provenance.source_claim_ids,
+        transformation: 'rewrite',
+      };
+    });
+    resumes.replaceClaims(resumeVersionId, claims);
+    const markClaimValid = db.prepare(`
+      UPDATE resume_claims
+      SET validation_status = 'valid', validation_notes = ?
+      WHERE resume_version_id = ? AND rendered_text = ?
+    `);
+    semanticValidation.assessments.forEach((assessment) => {
+      markClaimValid.run(
+        `deterministic truth validation passed; semantic entailment: ${assessment.reason}`,
+        resumeVersionId,
+        assessment.claim,
+      );
+    });
+    resumes.addArtifact({
+      draftId: draft.id,
+      resumeVersionId,
+      type: 'tailored-yaml',
+      path: tailoredPath,
+      sha256: createHash('sha256').update(yamlData).digest('hex'),
+      byteSize: Buffer.byteLength(yamlData),
+    });
+
+    db.prepare("UPDATE jobs SET updated_at = datetime('now') WHERE id = ? AND user_id = ?")
+      .run(jobId, resolvedUserId);
+  })();
 
   // Note: status change to 'composed' is handled by compose.ts.
   // When tailor is called standalone, we leave status as-is.
@@ -285,6 +496,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
     success: true,
     jobId,
     versionName,
+    resumeVersionId: canonicalResumeVersionId,
     summary: llmOutput.summary,
   };
 }
