@@ -1,5 +1,5 @@
 /**
- * Job Market Intelligence — v0.5
+ * Job Market Intelligence
  *
  * Populates the `job_market_data` table with insights learned from real job
  * descriptions over time. Called after each successful extraction/scoring.
@@ -102,9 +102,9 @@ const DEFAULT_SKILLS = [
   'Deep Learning', 'MLOps',
 ];
 
-function getSkillList(): string[] {
+function getSkillList(userId = getActiveUserId()): string[] {
   // Try to load skills from candidate profile
-  const yamlStr = readCandidate(getActiveUserId());
+  const yamlStr = readCandidate(userId);
   if (yamlStr) {
     try {
       const profile = yaml.load(yamlStr) as Record<string, unknown> | undefined;
@@ -236,8 +236,8 @@ interface MarketDataResult {
 /**
  * Extract market data from a single job via regex. Call after scoring.
  *
- * This is the FALLBACK for jobs extracted before v0.5+ (no LLM salary/skills).
- * For jobs where the LLM already extracted salary and skills, this function
+ * This is the fallback when extraction did not produce salary or skill data.
+ * When the LLM already extracted salary and skills, this function
  * skips those steps and only updates title frequency.
  *
  * Up-serts into job_market_data, increasing sample_size and confidence
@@ -248,7 +248,7 @@ export function extractMarketData(job: {
   title: string | null;
   location: string | null;
   description: string | null;
-}): MarketDataResult {
+}, userId = getActiveUserId()): MarketDataResult {
   const db = getDb();
   let salaries = 0;
   let skills = 0;
@@ -291,7 +291,7 @@ export function extractMarketData(job: {
 
   // 2. Common requirements (skill frequency) — only if LLM didn't already extract
   if (hasLLMData.count === 0) {
-    const skillList = getSkillList();
+  const skillList = getSkillList(userId);
     const skillCounts = countSkillOccurrences(job.description, skillList);
 
     for (const [skill, count] of Object.entries(skillCounts)) {

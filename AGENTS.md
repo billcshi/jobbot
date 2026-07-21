@@ -12,38 +12,36 @@ AI-native personal job-search assistant. **Quality over quantity.** Not a commer
 
 When profile files are empty (first run), the AI MUST interview the user through conversation. Do NOT ask the user to edit YAML manually.
 
-1. Ask about work history, education, skills → write `local/profile/candidate.yaml`
-2. Ask about job preferences, deal-breakers → write `local/profile/preferences.yaml`
-3. Ask about sensitive answers (citizenship, sponsorship, etc.) → write `local/profile/answers.yaml`
+1. Ask about work history, education, skills → save the candidate profile through the profile store
+2. Ask about job preferences, deal-breakers → save preferences through the profile store
+
+Profiles are stored in the local SQLite database as immutable revisions. YAML is
+an import/export compatibility format; do not ask the user to edit it manually.
 
 **Hard rule:** Only write what the user tells you. Never invent or embellish.
 
 ## Personal Data vs. Project Code
 
-- `local/` — **gitignored.** Profile, database, resumes, browser sessions. NEVER commit.
+- `local/` — **gitignored.** Database and generated resumes. NEVER commit.
 - `local.example/` — Committed template. Shows the structure.
 - Everything else — Committed. Safe for public GitHub.
 
 ## Safety Constraints (Hard Rules)
 
-1. **Dry-run by default.** Application commands default to `--dry-run`. Only `--submit` triggers submission.
-2. **Never auto-submit.** Never write code that submits without explicit user confirmation.
-3. **Never invent personal data.** Resume tailoring may only reorder, select, or lightly rephrase data from `local/profile/candidate.yaml`.
-4. **Respect `ask_every_time`.** Fields with `ask_every_time: true` must stop and prompt.
-5. **Sensitive data is local only.** Never share or upload `local/profile/answers.yaml`.
-6. **AI fills profiles.** Interview the user; write YAML. Do not tell them to manually edit files.
-7. **Dedicated browser profile.** Use `local/browser-data/` — never the user's main profile.
+1. **No automated applications.** JobBot must never fill or submit job application forms. Applications happen outside JobBot and may only be tracked manually afterward.
+2. **Never invent personal data.** Resumes and cover letters may only select or
+   truthfully rephrase claims from their bound canonical profile revision, with
+   explicit provenance and fail-closed truth validation.
+3. **AI fills profiles.** Interview the user and create profile revisions. Do not tell them to manually edit files.
 
 ## Dependencies
 
 - Node.js ≥ 20, pnpm
 - **LaTeX** (texlive) — for resume/cover-letter PDF generation
-- **Playwright** (future) — for browser automation
-- **Stagehand** (future) — for ambiguous form filling
 
 ## Commands
 
-### Implemented (v0)
+### Implemented core
 
 ```bash
 pnpm jobbot init-db           # Create local/ + initialize SQLite
@@ -54,7 +52,7 @@ pnpm test                     # Run tests (vitest)
 pnpm typecheck                # TypeScript check
 ```
 
-### Planned (implement in order)
+### Implemented pipeline
 
 ```bash
 pnpm jobbot discover --query "..."    # Search job boards
@@ -62,10 +60,6 @@ pnpm jobbot extract --job <id>        # Scrape and parse job posting
 pnpm jobbot tailor --job <id>         # Generate tailored resume data
 pnpm jobbot render --job <id>         # Render LaTeX → PDF
 pnpm jobbot cover-letter --job <id>   # Generate cover letter (LaTeX)
-pnpm jobbot apply --job <id> --dry-run  # Fill form, stop before submit
-pnpm jobbot apply --job <id> --submit   # Fill and submit (with confirmation)
-pnpm jobbot sync-email                # Sync Gmail, classify messages
-pnpm jobbot report                    # Analytics dashboard
 ```
 
 ## Code Style

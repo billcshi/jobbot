@@ -6,8 +6,7 @@ dist/
 
 # Personal data — NEVER commit this directory.
 # The repo ships local.example/ as a public template.
-# Your real profile, database, browser sessions, and rendered
-# resumes live here and must stay local.
+# Your real profile, database, and rendered resumes live here and must stay local.
 local/
 
 # Claude Code local settings (machine-specific paths, permissions)

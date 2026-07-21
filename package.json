@@ -8,20 +8,18 @@
     "jobbot": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "cheerio": "^1.2.0",
     "ejs": "^6.0.1",
     "express": "^5.2.1",
-    "js-yaml": "^4.1.0",
-    "tsx": "^4.19.0"
+    "js-yaml": "^4.3.0",
+    "tsx": "^4.23.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/cheerio": "^1.0.0",
     "@types/ejs": "^3.1.5",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",

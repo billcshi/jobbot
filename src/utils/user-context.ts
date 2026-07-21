@@ -2,8 +2,8 @@
  * User context — determines which user is "active" for scoring,
  * tailoring, and application tracking.
  *
- * Web UI uses a cookie. CLI uses --user flag or the stored default.
- * Falls back to the 'default' user (id=1) created during migration.
+ * The Web UI uses authenticated sessions. CLI uses --user or lazily creates a
+ * local default only when no registered user exists.
  */
 
 import { getDb } from '../db/client.js';
@@ -38,7 +38,7 @@ export function setActiveUser(nameOrId: string | number): void {
   }
 }
 
-/** Get the active user ID. Falls back to the default user if none set. */
+/** Get the active CLI user ID, creating a CLI fallback if none exists. */
 export function getActiveUserId(): number {
   if (currentUserId) return currentUserId;
   const def = getDefaultUser();
@@ -54,7 +54,7 @@ export function getActiveUserName(): string {
   return currentUserName!;
 }
 
-/** Get the default user. Returns the first available user, creates 'default' if none exist. */
+/** Return the first available user, or create a CLI-only fallback. */
 function getDefaultUser(): { id: number; name: string } {
   const db = getDb();
   // Try any existing user first
@@ -63,7 +63,7 @@ function getDefaultUser(): { id: number; name: string } {
     | undefined;
   if (existing) return existing;
 
-  // Late creation — should normally be created during migration
+  // CLI-only fallback for a completely fresh database.
   const result = db.prepare(
     "INSERT INTO users (name, active, created_at) VALUES ('default', 1, datetime('now'))",
   ).run();
@@ -103,7 +103,7 @@ export function resetActiveUser(): void {
  * Use this in web request handlers to avoid race conditions between
  * concurrent requests from different users.
  *
- * Returns the user's ID, or falls back to the default user.
+ * Returns the user's ID, or falls back to the first CLI user.
  */
 export function resolveUserId(nameOrId: string | number): number {
   const db = getDb();
@@ -127,7 +127,7 @@ export function resolveUserId(nameOrId: string | number): number {
     | undefined;
   if (first) return first.id;
 
-  // Late creation (shouldn't normally happen)
+  // CLI-only fallback for a completely fresh database.
   const result = db.prepare(
     "INSERT INTO users (name, active, created_at) VALUES ('default', 1, datetime('now'))",
   ).run();

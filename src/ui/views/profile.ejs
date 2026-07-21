@@ -1,14 +1,14 @@
 <%- include('_head', { title: 'Profile' }) %>
 
 <h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">Profile</h1>
-<p style="color:var(--text-muted);margin-bottom:24px;">Manage your candidate profile, preferences, and application answers. All data is stored in the database and never committed.</p>
+<p style="color:var(--text-muted);margin-bottom:24px;">Manage your candidate profile and job preferences. All data is stored in the database and never committed.</p>
 
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px">
   <!-- Candidate -->
   <div class="card">
     <h2>👤 Candidate Profile</h2>
     <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Work history, education, skills, links. The source of truth for resume tailoring — never fabricated, only rearranged.</p>
-    <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">user_preferences.candidate</span></div>
+    <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">profile_revisions.candidate_json</span></div>
     <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= candidateSize %></span></div>
     <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= candidateSections.join(', ') %></span></div>
     <a href="/profile/candidate" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
@@ -18,21 +18,12 @@
   <div class="card">
     <h2>🎯 Preferences</h2>
     <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Job titles, locations, industries, deal-breakers, and scoring weights.</p>
-    <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">user_preferences.preferences</span></div>
+    <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">profile_revisions.preferences_json</span></div>
     <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= prefsSize %></span></div>
     <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= prefsSections.join(', ') %></span></div>
     <a href="/profile/preferences" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
   </div>
 
-  <!-- Answers -->
-  <div class="card">
-    <h2>📋 Application Answers</h2>
-    <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Standard application questions: work authorization, demographic info, prior applications. Sensitive — never shared or uploaded.</p>
-    <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">user_preferences.answers</span></div>
-    <div class="detail-row"><span class="detail-label">Size</span><span class="detail-value"><%= answersSize %></span></div>
-    <div class="detail-row"><span class="detail-label">Sections</span><span class="detail-value"><%= answersSections.join(', ') %></span></div>
-    <a href="/profile/answers" class="btn-link" style="margin-top:16px;display:inline-block">View & Edit →</a>
-  </div>
 </div>
 
 <style>

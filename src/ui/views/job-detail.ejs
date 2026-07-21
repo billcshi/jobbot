@@ -126,7 +126,7 @@
 
   <!-- score card -->
   <div class="card">
-    <h2>Score <span style="font-size:11px;color:var(--text-dim);font-weight:400">(<%= typeof activeUser !== 'undefined' ? activeUser : 'default' %>)</span></h2>
+    <h2>Score <span style="font-size:11px;color:var(--text-dim);font-weight:400">(<%= userName %>)</span></h2>
     <% const dScore = (typeof displayScore !== 'undefined' && displayScore != null) ? displayScore : job.score;
        const dTier = (typeof displayTier !== 'undefined' && displayTier) ? displayTier : job.tier; %>
     <% if (dScore != null) { %>
@@ -343,8 +343,7 @@
     <input type="text" id="instr-audit" class="instr-input" placeholder="Optional: AI instruction for re-audit..." />
     <button class="btn-regen" onclick="regenerate('audit', 'instr-audit')">🔄 Re-audit</button>
     <% if (auditData) { %>
-      <button class="btn-regen" onclick="recomposeWithAudit(true)" title="Re-compose with audit feedback + LaTeX layout fixes, then re-audit">🔧 Re-compose with TeX Fix</button>
-      <button class="btn-regen" onclick="recomposeWithAudit(false)" title="Re-compose with audit feedback (content only, no LaTeX changes), then re-audit">🔧 Re-compose (Content Only)</button>
+      <button class="btn-regen" onclick="recomposeWithAudit()" title="Re-compose canonical content with audit feedback, then re-audit">🔧 Re-compose with Audit Feedback</button>
     <% } %>
     <span class="regen-status" id="status-audit"></span>
   </div>
@@ -726,9 +725,9 @@ async function runFullPipeline() {
   resumePipeline();
 }
 
-async function recomposeWithAudit(fixLatex) {
-  const label = fixLatex ? 'with TeX layout fixes' : 'content only';
-  if (!confirm(`Re-compose ${label} and re-audit? This will regenerate the resume${fixLatex ? ' and fix LaTeX layout issues' : ''} using the latest audit suggestions, then audit the result.`)) return;
+async function recomposeWithAudit() {
+  const label = 'with audit feedback';
+  if (!confirm('Re-compose with the latest audit feedback and re-audit?')) return;
   const statusEl = document.getElementById('run-from-status');
   statusEl.textContent = '⏳ Re-composing ' + label + '...';
   statusEl.style.color = 'var(--yellow)';
@@ -738,7 +737,7 @@ async function recomposeWithAudit(fixLatex) {
     const resp = await fetch('/api/jobs/<%= job.id %>/run-from', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stage: 'compose', fixLatex }),
+      body: JSON.stringify({ stage: 'compose', fixLatex: false }),
     });
     const data = await resp.json();
     if (data.ok) {

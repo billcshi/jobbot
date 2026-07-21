@@ -2,7 +2,7 @@
 
 **Web-UI personal job-search assistant.** AI-native, quality over quantity.
 
-JobBot is a local web application (Express + EJS) that helps you manage every stage of a job search — from discovering listings to generating tailored LaTeX resumes. Designed to be used with Claude Code: talk to the AI, and it populates your profile, scores jobs, tailors resumes, and will eventually fill out applications. Everything defaults to dry-run.
+JobBot is a local web application (Express + EJS) that helps you discover and evaluate listings, then generate tailored LaTeX resumes and cover letters. Designed to be used with Claude Code: talk to the AI, and it populates your profile, scores jobs, and tailors application materials. Applications themselves remain entirely manual.
 
 **Start the web UI:**
 
@@ -11,7 +11,7 @@ pnpm jobbot ui
 # Open http://localhost:3000
 ```
 
-The web UI provides dashboard analytics, pipeline management, batch URL adding, job board discovery, profile editing with AI assistance (side-by-side diff view), cover letter generation, AI call logging, and more. CLI commands are available for scripting and automation.
+The web UI provides dashboard analytics, pipeline management, batch URL adding, job board discovery, local candidate-profile editing, AI-assisted preference editing, truth-validated cover letter generation, AI call logging, and more. CLI commands are available for scripting and automation.
 
 ## Quick Setup
 
@@ -71,23 +71,6 @@ pnpm jobbot init-db
 | `poppler-utils` | **pdftoppm** — PDF → PNG for visual audit |
 | `python3-pip` + `PyMuPDF` | Python PDF-to-image fallback |
 
-### Future dependencies (v1.0+)
-
-| Dependency | Purpose |
-|---|---|
-| Playwright | Deterministic browser automation (Greenhouse, Lever, Ashby) |
-| Stagehand | AI-driven form filling for ambiguous ATS forms |
-
-```bash
-pnpm exec playwright install chromium
-sudo apt install -y \
-  libnss3 libnspr4 libatk-bridge2.0-0 libdrm2 libxkbcommon0 \
-  libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-  libgbm1 libpango-1.0-0 libcairo2 libasound2t64
-```
-
-See `docs/browser-setup.md` for detailed WSL2 Playwright setup.
-
 ## Important: Personal Data vs. Project Code
 
 This repo is designed to be **safe to share on GitHub**. Your personal data lives in `local/` — a directory that is **gitignored and never committed**.
@@ -96,7 +79,6 @@ This repo is designed to be **safe to share on GitHub**. Your personal data live
 local/              ← YOUR personal data (gitignored — NEVER commit)
   data/               Your SQLite database (profile, jobs, scores, preferences)
   resumes/            Your generated LaTeX resumes and PDFs
-  browser-data/       Your Playwright browser profile
 
 local.example/      ← Public template (committed — shows the structure)
 ```
@@ -107,9 +89,9 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`. Fill i
 
 - **AI-native.** You don't edit anything by hand. Describe your background, preferences, and deal-breakers to Claude Code — it fills in your profile via the DB.
 - **Quality, not quantity.** This is not a mass-apply bot. The goal is to surface the best matches and give each one genuine attention.
-- **Never auto-submit.** Every application command defaults to `--dry-run`. You must explicitly pass `--submit` to finalize.
+- **Manual applications.** JobBot prepares materials and tracks outcomes, but never fills or submits application forms.
 - **Never invent data.** Resume tailoring may reorder, select, or lightly rephrase *real* experience — but it will never fabricate employers, dates, skills, or claims.
-- **You are in control.** Sensitive answers are stored in your local SQLite DB. Fields marked `ask_every_time: true` stop the pipeline and ask you each time.
+- **You are in control.** You review the generated materials and submit every application yourself.
 
 ## Creating Your Profile (AI-Native)
 
@@ -126,7 +108,7 @@ Claude reads `CLAUDE.md` on startup and knows it should interview you.
 
 ### Step 2: Talk to Claude
 
-Tell Claude about yourself. It will ask questions and fill in your profile (stored in SQLite `user_preferences` table, viewable at `/profile` in the web UI):
+Tell Claude about yourself. It will ask questions and create immutable profile revisions in SQLite, viewable at `/profile` in the web UI:
 
 **Candidate Profile** — Your real background:
 - Work history (company, title, dates, highlights, technologies)
@@ -141,14 +123,6 @@ Tell Claude about yourself. It will ask questions and fill in your profile (stor
 - Deal-breakers (keywords or industries to reject)
 - Salary expectations
 
-**Answers** — Sensitive application answers:
-- Work authorization, sponsorship
-- Disability, veteran, gender, race status
-- Whether you've applied recently
-- Expected salary
-
-Claude sets `ask_every_time: true` for anything that should be decided per-application.
-
 ### Step 3: Review
 
 Open the web UI at http://localhost:3000/profile to review and edit your profile at any time. Everything Claude writes is based on what you said. Nothing is invented.
@@ -161,7 +135,7 @@ Open the web UI at http://localhost:3000/profile to review and edit your profile
 |---|---|
 | `pnpm jobbot ui` | **Start web dashboard** at http://localhost:3000 |
 
-The web UI provides: dashboard with analytics charts, pipeline management, batch URL adding, job board discovery, job detail with salary/skills display and interactive pipeline tracker, profile editing with AI assistance (side-by-side diff view), cover letter generation, AI call logging, and event timeline.
+The web UI provides: dashboard with analytics charts, pipeline management, batch URL adding, job board discovery, job detail with salary/skills display and interactive pipeline tracker, local candidate-profile editing, AI-assisted preference editing, truth-validated cover letter generation, AI call logging, and event timeline.
 
 ### CLI Commands
 
@@ -183,7 +157,7 @@ The web UI provides: dashboard with analytics charts, pipeline management, batch
 | `pnpm jobbot tailor --job <id>` | LLM resume tailoring (internal) |
 | `pnpm jobbot render --job <id>` | LaTeX → PDF rendering (internal) |
 | `pnpm jobbot compose --job <id>` | Tailor + render in one step |
-| `pnpm jobbot cover-letter --job <id>` | Generate cover letter via LLM |
+| `pnpm jobbot cover-letter --job <id>` | Generate a versioned, evidence/provenance-validated cover letter |
 | `pnpm jobbot audit --job <id>` | Content (DeepSeek committee) + visual (GPT-5.5/Claude) audit |
 | `pnpm jobbot schedule --once` | Run pipeline once |
 | `pnpm jobbot schedule --interval <minutes>` | Run pipeline on a recurring interval |
@@ -212,13 +186,11 @@ jobbot/
     setup.sh            One-command setup script
 
   local.example/        Public template (committed to git)
-    data/                 .gitkeep placeholder
-    resumes/              Generated resume versions placeholder
+    config.yaml           Safe configuration template
 
   local/                YOUR personal data (gitignored, never committed)
     data/                 SQLite database (profile, jobs, scores, preferences)
     resumes/              Generated LaTeX resumes and PDFs
-    browser-data/         Playwright persistent browser profile
 
   src/                  TypeScript source (public, committed)
     cli.ts                CLI entry point
@@ -227,35 +199,26 @@ jobbot/
     jobs/extractors/      LLM-based job detail extraction (DeepSeek)
     jobs/scorers/         LLM + deterministic job scoring
     ui/                   Express web UI server + EJS views
-    apply/                Application orchestration + ATS adapters (future)
-    email/                Gmail sync and classification (future)
-    analytics/            Search reports (future)
     utils/                Profile store, config, logger, AI logger, paths
 
   resumes/
     master.tex            LaTeX resume template (public)
   prompts/                LLM prompt templates (public)
   tests/                  Vitest tests (public)
-  docs/                   Setup guides, release notes, WSL2
+  docs/                   Architecture and pipeline guides
 ```
 
-## Roadmap
+## Implemented Capabilities
 
-- [x] **v0** — CLI skeleton: init-db, add-url, score, list
-- [x] **v0.1** — Scrape and extract job details via DeepSeek LLM
-- [x] **v0.2** — LLM-based scoring using `prompts/score-job.md`
-- [x] **v0.3** — Web UI dashboard + pipeline visualization
-- [x] **v0.4** — Pipeline automation, delete, compose (tailor+render), audit, AI logging
-- [x] **v0.5** — Job discovery, batch URL add, market intelligence, dashboard analytics, resume variants, cover letter tones, scheduled runs
-- [x] **v0.6** — Multi-user, committee audit, customize pipeline, interactive UI, profile in DB
-- [x] **v0.7** — Bug bash, pipeline polish, visual audit, experience ordering, tier gating
-- [ ] **v0.8** — Playwright browser automation (Greenhouse, Lever, Ashby, Workday, LinkedIn)
-- [ ] **v1.0** — Stagehand AI-driven form filling for ambiguous ATS forms
-- [ ] **v1.5** — Gmail sync and email classification
-- [ ] **v2.0** — Analytics dashboard and search reports
+- Authenticated, per-user Web workspace and versioned SQLite profiles
+- Job discovery, extraction, scoring, filtering, and scheduled pipeline runs
+- Evidence-bound resume tailoring, LaTeX rendering, and PDF artifact verification
+- Committee content review and visual quality gates
+- Provenanced cover-letter generation
+- Manual application and response tracking
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API (v4-pro/v4-flash) · OpenAI GPT-5.5 (vision) · Claude API (vision) · poppler-utils · PyMuPDF · Vitest · Playwright (v0.8) · Stagehand (v1.0)
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · OpenAI/Claude vision · poppler-utils · PyMuPDF · Vitest
 
 Designed for use with **Claude Code** and other AI coding agents on **WSL2**.

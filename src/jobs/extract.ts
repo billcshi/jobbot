@@ -2,6 +2,8 @@ import { getDb } from '../db/client.js';
 import { extractWithLLM } from './extractors/llm.js';
 import { writeLLMSalary, writeLLMSkills } from './market-data.js';
 import { logger } from '../utils/logger.js';
+import { getActiveUserId } from '../utils/user-context.js';
+import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
 
 export interface ExtractResult {
   jobId: number;
@@ -18,9 +20,10 @@ export interface ExtractResult {
  * Fetch and extract job details using LLM (DeepSeek).
  * Works on any ATS — no per-platform parsers needed.
  */
-export async function extractJob(jobId: number, signal?: AbortSignal): Promise<ExtractResult> {
+export async function extractJob(jobId: number, signal?: AbortSignal, userId = getActiveUserId()): Promise<ExtractResult> {
+  throwIfAborted(signal);
   const db = getDb();
-  const job = db.prepare('SELECT id, url, ats_type FROM jobs WHERE id = ?').get(jobId) as
+  const job = db.prepare('SELECT id, url, ats_type FROM jobs WHERE id = ? AND user_id = ?').get(jobId, userId) as
     | { id: number; url: string; ats_type: string }
     | undefined;
 
@@ -48,6 +51,7 @@ export async function extractJob(jobId: number, signal?: AbortSignal): Promise<E
     }
     html = await res.text();
   } catch (err) {
+    rethrowAbort(err, signal);
     const msg = err instanceof Error ? err.message : String(err);
     db.prepare('UPDATE jobs SET score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?')
       .run(`Extract failed: ${msg}`, jobId);
@@ -61,33 +65,37 @@ export async function extractJob(jobId: number, signal?: AbortSignal): Promise<E
   // LLM extraction
   try {
     const extracted = await extractWithLLM(html, job.url, signal);
+    throwIfAborted(signal);
 
-    db.prepare(
-      `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, status = 'extracted', updated_at = datetime('now') WHERE id = ?`,
-    ).run(extracted.title, extracted.company, extracted.location, extracted.description, extracted.applyUrl, jobId);
+    db.transaction(() => {
+      throwIfAborted(signal);
+      db.prepare(
+        `UPDATE jobs SET title = ?, company = ?, location = ?, description = ?, apply_url = ?, status = 'extracted', updated_at = datetime('now') WHERE id = ? AND user_id = ?`,
+      ).run(extracted.title, extracted.company, extracted.location, extracted.description, extracted.applyUrl, jobId, userId);
 
     // Write LLM-extracted salary and skills to market_data
-    if (extracted.salary) {
+      if (extracted.salary) {
       try {
         writeLLMSalary(jobId, extracted.salary, extracted.title, extracted.location);
         logger.debug(`Salary written for job #${jobId}`);
       } catch (err) {
         logger.warn(`Failed to write salary for job #${jobId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
-    if (extracted.skills.length > 0) {
+      }
+      if (extracted.skills.length > 0) {
       try {
         writeLLMSkills(jobId, extracted.skills);
         logger.debug(`${extracted.skills.length} skill(s) written for job #${jobId}`);
       } catch (err) {
         logger.warn(`Failed to write skills for job #${jobId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
+      }
 
     // Log event
-    db.prepare(
-      "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'extract', ?, ?, datetime('now'))",
-    ).run(jobId, `Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`, JSON.stringify({ title: extracted.title, company: extracted.company, location: extracted.location }));
+      db.prepare(
+        "INSERT INTO events (job_id, event_type, description, metadata, created_at) VALUES (?, 'extract', ?, ?, datetime('now'))",
+      ).run(jobId, `Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`, JSON.stringify({ title: extracted.title, company: extracted.company, location: extracted.location }));
+    })();
 
     logger.info(`Extracted: "${extracted.title}" at ${extracted.company} (${extracted.location})`);
     return {
@@ -96,6 +104,7 @@ export async function extractJob(jobId: number, signal?: AbortSignal): Promise<E
       success: true,
     };
   } catch (err) {
+    rethrowAbort(err, signal);
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`LLM extraction failed for job ${jobId}: ${msg}`);
     db.prepare('UPDATE jobs SET score_reason = ?, updated_at = datetime(\'now\') WHERE id = ?')
@@ -111,13 +120,13 @@ export async function extractJob(jobId: number, signal?: AbortSignal): Promise<E
 /**
  * Extract all jobs that haven't been extracted yet (title IS NULL).
  */
-export async function extractAll(): Promise<ExtractResult[]> {
+export async function extractAll(userId = getActiveUserId()): Promise<ExtractResult[]> {
   const db = getDb();
-  const jobs = db.prepare('SELECT id FROM jobs WHERE title IS NULL').all() as { id: number }[];
+  const jobs = db.prepare('SELECT id FROM jobs WHERE title IS NULL AND user_id = ?').all(userId) as { id: number }[];
 
   const results: ExtractResult[] = [];
   for (const job of jobs) {
-    const result = await extractJob(job.id);
+    const result = await extractJob(job.id, undefined, userId);
     results.push(result);
   }
 

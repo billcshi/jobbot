@@ -1,61 +1,78 @@
 /**
- * Profile store — reads and writes user profile data (candidate,
- * preferences, answers) from the SQLite database.
+ * Profile store — reads and writes candidate data and job preferences from
+ * the SQLite database.
  *
- * Each user has one row in `user_preferences`. The YAML content is
- * stored as TEXT columns. The web UI profile editor reads/writes
- * directly to the database.
+ * The canonical form is an immutable JSON profile revision. YAML is accepted
+ * and returned only as the Web editor interchange format; it is not stored.
  */
 
 import { getDb } from '../db/client.js';
+import yaml from 'js-yaml';
+import { ProfileRepository } from '../repositories/profile-repository.js';
+import { toJsonObject, type JsonObject } from '../domain/shared/json.js';
 
-// ----- DB helpers ------------------------------------------------------------
-
-function ensureRow(userId: number): void {
-  const db = getDb();
-  db.prepare(
-    `INSERT OR IGNORE INTO user_preferences (user_id, candidate, preferences, answers)
-     VALUES (?, '', '', '')`,
-  ).run(userId);
-}
-
-function readColumn(userId: number, column: string): string {
-  const db = getDb();
-  ensureRow(userId);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const row = db.prepare(
-    `SELECT ${column} FROM user_preferences WHERE user_id = ?`,
-  ).get(userId) as Record<string, string> | undefined;
-
-  return row?.[column] ?? '';
-}
+type ProfileSection = 'candidate' | 'preferences';
 
 // ----- public API ------------------------------------------------------------
 
 /** Read the candidate profile YAML for a user. */
 export function readCandidate(userId: number): string {
-  return readColumn(userId, 'candidate');
+  return readCanonicalSection(userId, 'candidate');
 }
 
 /** Read the preferences YAML for a user. */
 export function readPreferences(userId: number): string {
-  return readColumn(userId, 'preferences');
-}
-
-/** Read the answers YAML for a user. */
-export function readAnswers(userId: number): string {
-  return readColumn(userId, 'answers');
+  return readCanonicalSection(userId, 'preferences');
 }
 
 /** Write a profile section for a user. */
 export function writeProfile(
   userId: number,
-  type: 'candidate' | 'preferences' | 'answers',
-  yaml: string,
+  type: ProfileSection,
+  yamlContent: string,
 ): void {
   const db = getDb();
-  ensureRow(userId);
-  db.prepare(
-    `UPDATE user_preferences SET ${type} = ?, updated_at = datetime('now') WHERE user_id = ?`,
-  ).run(yaml, userId);
+  const repository = new ProfileRepository(db);
+  const active = repository.getActiveRevision(userId);
+  const sections = active ? {
+    candidate: active.candidate,
+    preferences: active.preferences,
+  } : {
+    candidate: {},
+    preferences: {},
+  };
+  sections[type] = parseProfileYaml(yamlContent, type);
+
+  repository.createRevision({
+    userId,
+    candidate: sections.candidate,
+    preferences: sections.preferences,
+    source: 'editor',
+  });
+}
+
+function readCanonicalSection(userId: number, section: ProfileSection): string {
+  const revision = new ProfileRepository(getDb()).getActiveRevision(userId);
+  if (!revision) return '';
+  return dumpProfileYaml(revision[section]);
+}
+
+function parseProfileYaml(content: string, section: ProfileSection): JsonObject {
+  if (content.trim() === '') return {};
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(content) as unknown;
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(`Invalid ${section} YAML${detail}`);
+  }
+  // js-yaml may produce Date values for timestamps. Convert those through its
+  // JSON representation, then enforce an object root and JSON-safe values.
+  const jsonCompatible = JSON.parse(JSON.stringify(parsed)) as unknown;
+  return toJsonObject(jsonCompatible, section);
+}
+
+function dumpProfileYaml(section: JsonObject): string {
+  if (Object.keys(section).length === 0) return '';
+  return yaml.dump(section, { noRefs: true, lineWidth: -1, sortKeys: false });
 }

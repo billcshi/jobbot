@@ -12,8 +12,6 @@
     border-radius: 8px; transition: border-color 0.2s;
   }
   .stage:hover { border-color: var(--accent); }
-  .stage.planned { opacity: 0.5; }
-  .stage.planned:hover { opacity: 0.8; }
   .stage::before {
     content: ''; position: absolute; left: -33px; top: 28px;
     width: 14px; height: 14px; border-radius: 50%;
@@ -30,9 +28,6 @@
     font-size: 12px; font-weight: 700; color: var(--accent);
     background: rgba(88,166,255,0.12); padding: 3px 8px; border-radius: 4px;
     white-space: nowrap;
-  }
-  .stage-number.planned-tag {
-    color: var(--text-dim); background: rgba(110,118,129,0.12);
   }
   .stage-title { font-size: 16px; font-weight: 600; color: var(--text); }
   .stage-cmd {
@@ -403,7 +398,7 @@
     <div class="comp-flow">
       <div class="comp comp-fetch"><div class="comp-title">Job Data</div><div class="comp-detail">title · company<br>location · description</div></div>
       <span class="comp-arrow">+</span>
-      <div class="comp comp-parse"><div class="comp-title">Preferences</div><div class="comp-detail">candidate.yaml<br>preferences.yaml</div></div>
+      <div class="comp comp-parse"><div class="comp-title">Profile Revision</div><div class="comp-detail">candidate_json<br>preferences_json</div></div>
       <span class="comp-arrow">→</span>
       <div class="comp comp-llm"><div class="comp-title">DeepSeek LLM</div><div class="comp-detail">prompts/score-job.md<br>6 dimensions<br>deal-breaker check</div></div>
       <span class="comp-arrow">→</span>
@@ -426,13 +421,13 @@
       <span class="stage-cmd">pnpm jobbot compose --job &lt;id&gt;</span>
     </div>
     <div class="comp-flow">
-      <div class="comp comp-fetch"><div class="comp-title">Job + Profile</div><div class="comp-detail">description<br>candidate.yaml<br>preferences</div></div>
+      <div class="comp comp-fetch"><div class="comp-title">Job + Profile</div><div class="comp-detail">frozen snapshot<br>active profile revision</div></div>
       <span class="comp-arrow">→</span>
       <div class="comp comp-llm"><div class="comp-title">DeepSeek LLM</div><div class="comp-detail">prompts/tailor-resume.md<br>select + reorder<br>rephrase bullets</div></div>
       <span class="comp-arrow">→</span>
       <div class="comp comp-render"><div class="comp-title">Inject + Render</div><div class="comp-detail">master.tex<br>replace placeholders<br>pdflatex → PDF</div></div>
       <span class="comp-arrow">→</span>
-      <div class="comp comp-output"><div class="comp-title">PDF Output</div><div class="comp-detail">local/resumes/<br>&lt;job-id&gt;-resume.pdf</div></div>
+      <div class="comp comp-output"><div class="comp-title">PDF Output</div><div class="comp-detail">local/resumes/&lt;job-id&gt;/<br>resume.pdf</div></div>
     </div>
     <div class="stage-foot">
       <strong><%= composeEligible %></strong> eligible (A/B only) ·
@@ -472,7 +467,7 @@
     <div class="comp-flow">
       <div class="comp comp-fetch"><div class="comp-title">Resume PDF</div><div class="comp-detail">rendered resume<br>pdftotext → text</div></div>
       <span class="comp-arrow">→</span>
-      <div class="comp comp-llm"><div class="comp-title">Content Audit</div><div class="comp-detail">DeepSeek LLM<br>prompts/audit-resume.md<br>accuracy · keywords</div></div>
+      <div class="comp comp-llm"><div class="comp-title">Content Audit</div><div class="comp-detail">Reviewer committee<br>ATS · hiring manager · format</div></div>
       <span class="comp-arrow">+</span>
       <div class="comp comp-parse"><div class="comp-title">Visual Audit</div><div class="comp-detail">pdftoppm → PNG<br>Claude Vision<br>layout · formatting</div></div>
       <span class="comp-arrow">→</span>
@@ -502,16 +497,6 @@
       <% } %>
     </div>
     <% } %>
-  </div>
-
-  <!-- Step 6: Apply (planned) -------------------------------------------- -->
-  <div class="stage planned">
-    <div class="stage-header">
-      <span class="stage-number planned-tag">v1.0</span>
-      <span class="stage-title">Apply</span>
-      <span class="stage-cmd">pnpm jobbot apply --job &lt;id&gt; (planned)</span>
-    </div>
-    <p style="color:var(--text-dim);font-size:13px">Coming in v1.0.</p>
   </div>
 
 </div>

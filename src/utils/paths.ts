@@ -17,7 +17,6 @@ export const LOCAL_DIR = path.join(PROJECT_ROOT, 'local');
 export const DATA_DIR = path.join(LOCAL_DIR, 'data');
 export const PROFILE_DIR = path.join(LOCAL_DIR, 'profile');
 export const RESUMES_DIR = path.join(LOCAL_DIR, 'resumes');
-export const BROWSER_DIR = path.join(LOCAL_DIR, 'browser-data');
 
 export const DB_PATH = path.join(DATA_DIR, 'jobbot.sqlite');
 

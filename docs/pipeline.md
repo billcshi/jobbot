@@ -106,7 +106,7 @@
                                           │
                                           ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  STEP 5: TAILOR (v0.3 — planned)                                             │
+│  STEP 5: TAILOR (implemented)                                                │
 │                                                                              │
 │  pnpm jobbot tailor --job <id>                                               │
 │                                                                              │
@@ -118,11 +118,10 @@
 │  │    · Candidate: full profile                                      │       │
 │  │    · Prompt: prompts/tailor-resume.md                             │       │
 │  │                                                                   │       │
-│  │  OUTPUT (YAML):                                                   │       │
-│  │    · Selected experience entries (reordered for relevance)        │       │
-│  │    · Tailored highlights (lightly rephrased, NOT fabricated)      │       │
-│  │    · Keyword adjustments                                          │       │
-│  │    · Professional summary                                         │       │
+│  │  OUTPUT (canonical JSON + YAML artifact):                         │       │
+│  │    · Frozen requirements and evidence match plan                  │       │
+│  │    · Reworded claims with source-claim provenance                 │       │
+│  │    · Deterministic and semantic truth validation                  │       │
 │  └──────────────────────────────────────────────────────────────────┘       │
 │           │                                                                    │
 │           ▼                                                                    │
@@ -134,7 +133,7 @@
                                           │
                                           ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  STEP 6: RENDER (v0.4 — planned)                                             │
+│  STEP 6: RENDER (implemented)                                                │
 │                                                                              │
 │  pnpm jobbot render --job <id>                                               │
 │                                                                              │
@@ -144,21 +143,6 @@
 │  │  resumes/master.tex   │    │                │    │  resumes/       │        │
 │  └──────────────────────┘    └───────────────┘    └────────────────┘        │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                          │
-                                          ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  STEP 7: APPLY (v1.0 — planned)                                              │
-│                                                                              │
-│  pnpm jobbot apply --job <id> --dry-run    (default: stop before submit)     │
-│  pnpm jobbot apply --job <id> --submit     (explicit submit)                 │
-│                                                                              │
-│  ┌────────────────┐    ┌─────────────────┐    ┌───────────────────┐         │
-│  │  Playwright     │    │  ATS Adapter     │    │  Stagehand          │         │
-│  │  (deterministic)│    │  Greenhouse     │    │  (ambiguous forms)  │         │
-│  │                 │    │  Lever          │    │  AI-driven fill     │         │
-│  │                 │    │  Ashby          │    │                     │         │
-│  └────────────────┘    └─────────────────┘    └───────────────────┘         │
-└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Agent Responsibilities
@@ -167,26 +151,16 @@
 |---|---|---|---|---|
 | **Extract Agent** | `pnpm jobbot extract` | HTML text | JSON: {title, company, location, description, applyUrl} | deepseek-chat |
 | **Score Agent** | `pnpm jobbot score` | Job desc + candidate + preferences | JSON: {score, tier, reason, highlights} | deepseek-chat |
-| **Tailor Agent** | `pnpm jobbot tailor` | Job desc + candidate | YAML: tailored resume data | deepseek-chat (planned) |
-| **Apply Agent** | `pnpm jobbot apply` | Form HTML + answers | Browser actions | Stagehand (planned) |
+| **Tailor Agent** | `pnpm jobbot tailor` | Frozen job snapshot + profile revision | Provenanced resume version | DeepSeek |
 
 ## Data Storage
 
 ```
 local/                          (gitignored — personal data)
-  profile/
-    candidate.yaml                  Candidate background
-    preferences.yaml                Scoring preferences
-    answers.yaml                    Sensitive answers
-  data/
-    jobbot.sqlite
-      ├── jobs                      All job postings
-      ├── resume_versions           Generated tailored resumes
-      ├── applications              Application tracking
-      ├── events                    Timeline events
-      └── job_market_data           Self-evolving market intelligence
-  resumes/
-    versions/                       Generated .tex files
-    output/                         Compiled PDFs
-  browser-data/                     Playwright profile
+  data/jobbot.sqlite            Canonical profiles, jobs, runs, and provenance
+  resumes/<job-id>/             Generated YAML/TeX/PDF artifacts for one job
 ```
+
+JobBot stops after generating and auditing application materials. Users submit
+applications themselves outside the project and may record outcomes manually in
+the Web UI.

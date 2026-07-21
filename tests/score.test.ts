@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { scoreJobDeterministic as scoreJob } from '../src/jobs/scorers/deterministic.js';
-import type { Preferences, ScoreResult } from '../src/jobs/score.js';
+import type { Preferences } from '../src/jobs/score.js';
 
 const DEFAULT_PREFS: Preferences = {
   preferred_titles: [

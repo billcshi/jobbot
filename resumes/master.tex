@@ -2,7 +2,7 @@
 %
 % Custom commands (\resumeItem, \resumeSubheading, etc.) for consistent formatting.
 % Placeholders are injected by the CLI during tailor + render.
-% See local.example/resumes/resume-example.tex for a compilable example.
+% JobBot copies and fills this template for each generated resume.
 %
 % Compile with:  pdflatex master.tex
 %
@@ -51,6 +51,13 @@
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
     \end{tabular*}\vspace{-10pt}
+}
+\newcommand{\resumeEduSubheading}[4]{
+  \vspace{2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-2pt}
 }
 \newcommand{\resumeProjectHeading}[2]{\item\begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}\small#1 & #2 \\\end{tabular*}\vspace{-7pt}}
 \newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
@@ -104,7 +111,7 @@
 \section{Education}
 \resumeSubHeadingListStart
   {{#education}}
-  \resumeSubheading
+  \resumeEduSubheading
     {{{school}}}{{{date_range}}}
     {{{degree}}}{{{location}}}
     {{#notes}}
