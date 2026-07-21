@@ -3,6 +3,7 @@ import {
   buildProfileEditPrompt,
   isTrustedMutationRequest,
   profileAllowsExternalAiEdit,
+  profileYamlForAiDraft,
 } from '../src/ui/server';
 
 describe('web mutation security', () => {
@@ -40,7 +41,14 @@ describe('web mutation security', () => {
   it('uses fail-closed truth instructions for candidate AI drafts', () => {
     const prompt = buildProfileEditPrompt('candidate');
     expect(prompt).toContain('NEVER invent, infer, embellish, or assume');
+    expect(prompt).toContain('If the current YAML is empty, create a minimal profile');
     expect(prompt).toContain('If the instruction is ambiguous or needs missing facts, leave that content unchanged');
     expect(prompt).not.toContain('make your best guess');
+  });
+
+  it('lets a new account create its first reviewable AI profile draft', () => {
+    expect(profileYamlForAiDraft('')).toBe('{}\n');
+    expect(profileYamlForAiDraft('  \n')).toBe('{}\n');
+    expect(profileYamlForAiDraft('name: Ada\n')).toBe('name: Ada\n');
   });
 });

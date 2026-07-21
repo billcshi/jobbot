@@ -862,6 +862,10 @@ export function profileAllowsExternalAiEdit(file: ProfileFile): file is AiEditab
   return file === 'candidate' || file === 'preferences';
 }
 
+export function profileYamlForAiDraft(yaml: string): string {
+  return yaml.trim() ? yaml : '{}\n';
+}
+
 /** Read a profile section from the database for a given user. */
 function readProfile(file: ProfileFile, userId: number): string {
   switch (file) {
@@ -964,6 +968,7 @@ export function buildProfileEditPrompt(file: AiEditableProfileFile): string {
       '- The current candidate profile and the user instruction are the only allowed factual sources.',
       '- NEVER invent, infer, embellish, or assume experience, skills, education, dates, metrics, employers, titles, responsibilities, contact details, or links.',
       '- Add a new fact only when the user explicitly states that fact in the instruction.',
+      '- If the current YAML is empty, create a minimal profile containing only facts explicitly stated in the user instruction; omit every unknown field.',
       '- When rewording, preserve the exact meaning, scope, seniority, dates, technologies, and numeric claims of the original.',
       '- If the instruction is ambiguous or needs missing facts, leave that content unchanged. Do not guess and do not add a NOTE that presents speculation as fact.',
       '- Do not remove factual content unless the user explicitly asks for its removal.',
@@ -973,6 +978,15 @@ export function buildProfileEditPrompt(file: AiEditableProfileFile): string {
       '- Preserve the existing YAML schema and list/object shapes.',
       '- Preserve stable IDs and source fields exactly unless the user explicitly asks to correct one.',
       '- Keep dates and numbers verbatim unless the user explicitly provides replacements.',
+      '',
+      '## Canonical candidate schema',
+      '- Top-level fields may include: `name`, `email`, `phone`, `location`, `work_experience`, `education`, `projects`, `skills`, and `links`.',
+      '- `name` is `{ first, last }`; `location` is `{ city, state, country }`.',
+      '- Each `work_experience` item uses `company`, `title`, `start`, `end`, optional `location`, `highlights`, and `technologies`.',
+      '- Each `education` item uses `school`, `degree`, `start`, `end`, optional `location`, and optional `notes`.',
+      '- Each `projects` item uses `name`, `highlights`, and `technologies`.',
+      '- `skills` groups string lists such as `languages`, `frameworks`, `infrastructure`, and `databases`; `links` may contain `github`, `linkedin`, and `website`.',
+      '- Omit unknown scalar fields instead of inventing placeholder values.',
     ].join('\n');
   }
 
@@ -1027,11 +1041,10 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   }
 
   const userId = res.locals.userId;
-  const currentYaml = readProfile(file, userId);
-  if (!currentYaml) {
-    res.status(404).json({ error: `Profile not found for ${res.locals.userName}: ${file}.yaml` });
-    return;
-  }
+  // A new account legitimately has no active profile revision yet. Represent
+  // that empty state as an object so AI can propose the first reviewable draft;
+  // the normal editor save remains the only operation that creates a revision.
+  const currentYaml = profileYamlForAiDraft(readProfile(file, userId));
 
   const prompt = buildProfileEditPrompt(file);
 
