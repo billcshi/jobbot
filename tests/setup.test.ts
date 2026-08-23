@@ -244,7 +244,7 @@ describe('one-command setup scripts', () => {
   });
 
   it.runIf(process.platform === 'win32')(
-    'executes WinGet, MiKTeX, and hash-locked pip branches with controlled command doubles',
+    'executes Corepack, WinGet, MiKTeX, and hash-locked pip branches with controlled command doubles',
     () => {
       const root = mkdtempSync(path.join(tmpdir(), 'jobbot-setup-windows-branches-'));
       const bin = path.join(root, 'bin');
@@ -252,6 +252,7 @@ describe('one-command setup scripts', () => {
       const runner = path.join(root, 'run-branches.ps1');
       mkdirSync(bin);
       writeFileSync(path.join(bin, 'miktex.cmd'), '@echo off\r\nexit /b 0\r\n', 'utf8');
+      writeFileSync(path.join(bin, 'corepack.cmd'), '@echo off\r\nexit /b 0\r\n', 'utf8');
       const setupScript = path.join(process.cwd(), 'scripts', 'setup.ps1').replaceAll("'", "''");
       const escapedRoot = root.replaceAll("'", "''");
       const escapedLog = log.replaceAll("'", "''");
@@ -270,6 +271,7 @@ describe('one-command setup scripts', () => {
         '    New-Item -ItemType File -Path $venvPython -Force | Out-Null',
         '  }',
         '}',
+        'Enable-CompatiblePnpm',
         "Install-WinGetPackage -Id 'MiKTeX.MiKTeX' -DisplayName 'MiKTeX'",
         'Install-MiKTeXTemplatePackages',
         `Install-PythonPdfLibraries -PythonCommand @('python-double') -RepositoryRoot '${escapedRoot}' | Out-Null`,
@@ -290,6 +292,8 @@ describe('one-command setup scripts', () => {
         });
         expect(result.status, result.stderr || result.stdout).toBe(0);
         const calls = readFileSync(log, 'utf8');
+        expect(calls).toContain('corepack prepare pnpm@10.15.1 --activate');
+        expect(calls).toContain('corepack enable pnpm');
         expect(calls).toContain('winget install --id MiKTeX.MiKTeX --exact --source winget');
         expect(calls).toContain('miktex.cmd packages require');
         expect(calls).toContain('python-double -m venv');
