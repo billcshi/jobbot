@@ -22,7 +22,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 
 [CmdletBinding()]
 param(
-    [switch]$SkipSystemDependencies
+    [switch]$SkipSystemDependencies,
+
+    [Parameter(DontShow = $true)]
+    [switch]$LoadFunctionsOnly
 )
 
 Set-StrictMode -Version Latest
@@ -313,6 +316,42 @@ function Test-PythonPdfLibraries {
     }
 }
 
+function Install-PythonPdfLibraries {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$PythonCommand,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryRoot
+    )
+
+    $pythonVenv = Join-Path $RepositoryRoot 'local\python-venv'
+    $venvPython = Join-Path $pythonVenv 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        Write-Host '  Creating isolated Python environment in local/python-venv...'
+        Invoke-Python -PythonCommand $PythonCommand -Arguments @('-m', 'venv', $pythonVenv)
+    }
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        throw 'Python virtual environment creation completed without producing Scripts\python.exe.'
+    }
+
+    $venvCommand = @($venvPython)
+    Write-Host '  Installing hash-locked Python PDF libraries...'
+    Invoke-Python -PythonCommand $venvCommand -Arguments @(
+        '-m', 'pip', 'install', '--quiet', '--only-binary=:all:', '--require-hashes',
+        '-r', (Join-Path $RepositoryRoot 'requirements-pdf.lock')
+    )
+    if (-not (Test-PythonPdfLibraries -PythonCommand $venvCommand)) {
+        throw 'Python PDF libraries failed their import check inside local/python-venv.'
+    }
+
+    return $venvCommand
+}
+
+if ($LoadFunctionsOnly) {
+    return
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Push-Location $repositoryRoot
 
@@ -401,21 +440,9 @@ try {
             throw 'Python was installed but is not visible in this PowerShell session. Open a new PowerShell window and run this script again.'
         }
 
-        $pythonVenv = Join-Path $repositoryRoot 'local\python-venv'
-        $venvPython = Join-Path $pythonVenv 'Scripts\python.exe'
-        if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-            Write-Host '  Creating isolated Python environment in local/python-venv...'
-            Invoke-Python -PythonCommand $pythonCommand -Arguments @('-m', 'venv', $pythonVenv)
-        }
-        $pythonCommand = @($venvPython)
-        Write-Host '  Installing hash-locked Python PDF libraries...'
-        Invoke-Python -PythonCommand $pythonCommand -Arguments @(
-            '-m', 'pip', 'install', '--quiet', '--only-binary=:all:', '--require-hashes',
-            '-r', (Join-Path $repositoryRoot 'requirements-pdf.lock')
-        )
-        if (-not (Test-PythonPdfLibraries -PythonCommand $pythonCommand)) {
-            throw 'Python PDF libraries failed their import check inside local/python-venv.'
-        }
+        $pythonCommand = @(Install-PythonPdfLibraries `
+            -PythonCommand $pythonCommand `
+            -RepositoryRoot $repositoryRoot)
     }
 
     Write-Step '[3/5] Installing Node.js dependencies...'

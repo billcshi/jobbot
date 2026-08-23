@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -119,19 +120,96 @@ describe('one-command setup scripts', () => {
     const log = path.join(root, 'commands.log');
     mkdirSync(bin);
     writeExecutable(path.join(bin, 'node'), '#!/usr/bin/env bash\necho v20.19.0\n');
+    const corepackMarker = path.join(root, 'corepack-ready');
     writeExecutable(path.join(bin, 'pnpm'), [
       '#!/usr/bin/env bash',
-      'if [ "${1:-}" = "--version" ]; then echo 10.15.1; exit 0; fi',
+      'if [ "${1:-}" = "--version" ]; then',
+      '  if [ -f "$JOBBOT_COREPACK_MARKER" ]; then echo 10.15.1; else echo 9.15.0; fi',
+      '  exit 0',
+      'fi',
       'printf "%s\\n" "$*" >> "$JOBBOT_SETUP_LOG"',
       '',
     ].join('\n'));
-    writeExecutable(path.join(bin, 'kpsewhich'), '#!/usr/bin/env bash\necho "/fake/${1:-package}"\n');
+    writeExecutable(path.join(bin, 'corepack'), [
+      '#!/usr/bin/env bash',
+      'printf "corepack %s\\n" "$*" >> "$JOBBOT_SETUP_LOG"',
+      'if [ "${1:-}" = "prepare" ]; then touch "$JOBBOT_COREPACK_MARKER"; fi',
+      '',
+    ].join('\n'));
+    writeExecutable(path.join(bin, 'kpsewhich'), '#!/usr/bin/env bash\nexit 1\n');
+    writeExecutable(path.join(bin, 'id'), '#!/usr/bin/env bash\necho 1000\n');
+    writeExecutable(path.join(bin, 'apt-get'), '#!/usr/bin/env bash\nexit 0\n');
+    writeExecutable(path.join(bin, 'sudo'), [
+      '#!/usr/bin/env bash',
+      'printf "sudo %s\\n" "$*" >> "$JOBBOT_SETUP_LOG"',
+      '',
+    ].join('\n'));
     writeExecutable(path.join(bin, 'pdflatex'), [
       '#!/usr/bin/env bash',
       'if [ "${1:-}" = "--version" ]; then echo "pdfTeX test"; exit 0; fi',
       'for arg in "$@"; do case "$arg" in -output-directory=*) out="${arg#*=}" ;; esac; done',
       'mkdir -p "$out"',
       'touch "$out/smoke.pdf"',
+      '',
+    ].join('\n'));
+    for (const command of ['pdftoppm', 'pdfinfo', 'pdftotext']) {
+      writeExecutable(path.join(bin, command), `#!/usr/bin/env bash\necho "${command} test"\n`);
+    }
+    writeExecutable(path.join(bin, 'python3'), [
+      '#!/usr/bin/env bash',
+      'printf "python3 %s\\n" "$*" >> "$JOBBOT_SETUP_LOG"',
+      'if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ] && [ "${3:-}" != "--help" ]; then',
+      '  mkdir -p "$3/bin"',
+      '  cp "$0" "$3/bin/python"',
+      '  chmod +x "$3/bin/python"',
+      'fi',
+      '',
+    ].join('\n'));
+
+    try {
+      const result = spawnSync('bash', [path.join(process.cwd(), 'scripts', 'setup.sh')], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+          JOBBOT_SETUP_LOG: log,
+          JOBBOT_COREPACK_MARKER: corepackMarker,
+          JOBBOT_SETUP_PYTHON_VENV: path.join(root, 'python-venv'),
+        },
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      const calls = readFileSync(log, 'utf8');
+      expect(calls).toContain('corepack enable');
+      expect(calls).toContain('corepack prepare pnpm@10.15.1 --activate');
+      expect(calls).toContain('sudo apt-get install -y');
+      expect(calls).toContain('--require-hashes');
+      expect(calls).toContain('install --frozen-lockfile');
+      expect(calls).toContain('jobbot init-db');
+      expect(calls).toContain('typecheck');
+      expect(calls).toContain('test');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('cleans the Linux LaTeX smoke directory after a controlled failure', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'jobbot-setup-linux-failure-'));
+    const bin = path.join(root, 'bin');
+    const smokeParent = path.join(root, 'smoke');
+    mkdirSync(bin);
+    mkdirSync(smokeParent);
+    writeExecutable(path.join(bin, 'node'), '#!/usr/bin/env bash\necho v20.19.0\n');
+    writeExecutable(path.join(bin, 'pnpm'), [
+      '#!/usr/bin/env bash',
+      'if [ "${1:-}" = "--version" ]; then echo 10.15.1; fi',
+      '',
+    ].join('\n'));
+    writeExecutable(path.join(bin, 'kpsewhich'), '#!/usr/bin/env bash\necho "/fake/${1:-package}"\n');
+    writeExecutable(path.join(bin, 'pdflatex'), [
+      '#!/usr/bin/env bash',
+      'if [ "${1:-}" = "--version" ]; then echo "pdfTeX test"; exit 0; fi',
+      'exit 7',
       '',
     ].join('\n'));
     for (const command of ['pdftoppm', 'pdfinfo', 'pdftotext']) {
@@ -154,20 +232,73 @@ describe('one-command setup scripts', () => {
         env: {
           ...process.env,
           PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
-          JOBBOT_SETUP_LOG: log,
+          TMPDIR: smokeParent,
           JOBBOT_SETUP_PYTHON_VENV: path.join(root, 'python-venv'),
         },
       });
-      expect(result.status, result.stderr || result.stdout).toBe(0);
-      const calls = readFileSync(log, 'utf8');
-      expect(calls).toContain('install --frozen-lockfile');
-      expect(calls).toContain('jobbot init-db');
-      expect(calls).toContain('typecheck');
-      expect(calls).toContain('test');
+      expect(result.status).not.toBe(0);
+      expect(readdirSync(smokeParent)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform === 'win32')(
+    'executes WinGet, MiKTeX, and hash-locked pip branches with controlled command doubles',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'jobbot-setup-windows-branches-'));
+      const bin = path.join(root, 'bin');
+      const log = path.join(root, 'commands.log');
+      const runner = path.join(root, 'run-branches.ps1');
+      mkdirSync(bin);
+      writeFileSync(path.join(bin, 'miktex.cmd'), '@echo off\r\nexit /b 0\r\n', 'utf8');
+      const setupScript = path.join(process.cwd(), 'scripts', 'setup.ps1').replaceAll("'", "''");
+      const escapedRoot = root.replaceAll("'", "''");
+      const escapedLog = log.replaceAll("'", "''");
+      writeFileSync(runner, [
+        "$ErrorActionPreference = 'Stop'",
+        `. '${setupScript}' -LoadFunctionsOnly`,
+        '$script:Calls = [Collections.Generic.List[string]]::new()',
+        'function Update-SessionPath {}',
+        'function Test-PythonPdfLibraries { param([string[]]$PythonCommand) return $true }',
+        'function Invoke-CheckedCommand {',
+        '  param([string]$FilePath, [string[]]$Arguments)',
+        '  $script:Calls.Add(($FilePath + " " + ($Arguments -join " "))) | Out-Null',
+        '  if ($Arguments.Count -ge 3 -and $Arguments[0] -eq "-m" -and $Arguments[1] -eq "venv") {',
+        '    $venvPython = Join-Path $Arguments[2] "Scripts\\python.exe"',
+        '    New-Item -ItemType Directory -Path (Split-Path $venvPython) -Force | Out-Null',
+        '    New-Item -ItemType File -Path $venvPython -Force | Out-Null',
+        '  }',
+        '}',
+        "Install-WinGetPackage -Id 'MiKTeX.MiKTeX' -DisplayName 'MiKTeX'",
+        'Install-MiKTeXTemplatePackages',
+        `Install-PythonPdfLibraries -PythonCommand @('python-double') -RepositoryRoot '${escapedRoot}' | Out-Null`,
+        `$script:Calls | Set-Content -LiteralPath '${escapedLog}' -Encoding utf8`,
+        '',
+      ].join('\r\n'), 'utf8');
+
+      try {
+        const result = spawnSync('powershell.exe', [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner,
+        ], {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+          },
+        });
+        expect(result.status, result.stderr || result.stdout).toBe(0);
+        const calls = readFileSync(log, 'utf8');
+        expect(calls).toContain('winget install --id MiKTeX.MiKTeX --exact --source winget');
+        expect(calls).toContain('miktex.cmd packages require');
+        expect(calls).toContain('python-double -m venv');
+        expect(calls).toContain('--only-binary=:all: --require-hashes');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.runIf(process.platform === 'win32')('executes the Windows setup flow with controlled tool doubles', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'jobbot-setup-windows-'));
