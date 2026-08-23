@@ -48,6 +48,9 @@ function requirementId(text: string): string {
 }
 
 const NORMATIVE_LANGUAGE = /\b(must|required|requirement|qualification|responsibilit|you will|you'll|need(?:ed)? to|minimum|preferred|nice to have|experience (?:with|in)|proficien|ability to|degree|\d+\+? years?|work permit|authorized to work)\b/i;
+const REQUIREMENT_SECTION_HEADING = /^(?:requirements?|qualifications?|responsibilities|preferred (?:skills|qualifications)|what you(?:'ll| will)(?: be)? do(?:ing)?|what (?:you bring|we(?:'re| are) looking for)|who you are)$/i;
+const NON_REQUIREMENT_SECTION_HEADING = /^(?:about us|view company profile|why you(?:'ll| will) love working here|what we offer|benefits|perks|equal opportunity|eeo(?:, salary and location)?|salary(?: and location)?|location)$/i;
+const JOB_BOARD_BOILERPLATE = /(?:want more jobs like this|delivered to your inbox|email address\*?|send me .* newsletters?|by signing up|terms of service|privacy policy|get jobs!?)/i;
 
 /** Deterministically identify JD spans that need an explicit coverage decision. */
 export function requirementCandidateSpans(jobDescription: string): string[] {
@@ -57,12 +60,18 @@ export function requirementCandidateSpans(jobDescription: string): string[] {
     const line = normalizedText(rawLine.replace(/^\s*[-*•]\s*/, ''));
     if (!line) continue;
     const heading = line.replace(/:$/, '');
-    if (/^(requirements?|qualifications?|responsibilities|what you(?:'ll| will) do|what we(?:'re| are) looking for)$/i.test(heading)) {
+    if (REQUIREMENT_SECTION_HEADING.test(heading)) {
       inRequirementSection = true;
       continue;
     }
+    if (NON_REQUIREMENT_SECTION_HEADING.test(heading)) {
+      inRequirementSection = false;
+      continue;
+    }
+    if (JOB_BOARD_BOILERPLATE.test(line)) continue;
     if (/^[A-Z][A-Za-z &/]{2,40}:$/.test(rawLine.trim()) && !NORMATIVE_LANGUAGE.test(line)) {
       inRequirementSection = false;
+      continue;
     }
     const sentences = line.split(/(?<=[.!?])\s+/).map(normalizedText);
     for (const sentence of sentences) {
@@ -210,6 +219,7 @@ export function parseRequirementDrafts(value: unknown): RequirementDraft[] {
 const REQUIREMENT_EXTRACTION_PROMPT = [
   'Extract explicit job requirements from the supplied posting.',
   'Do not evaluate a candidate and do not infer requirements absent from the posting.',
+  'The user message includes normative_spans_to_cover. Every supplied span must be represented by at least one extracted requirement that preserves its complete meaning.',
   'Return only JSON: {"requirements":[{"text":"...","kind":"responsibility|skill|experience|education|other","priority":"required|preferred"}]}.',
   'Preserve the posting meaning. Use required only for mandatory language; use preferred for optional or nice-to-have language.',
 ].join('\n');
@@ -235,11 +245,21 @@ export async function extractJobRequirements(
   const model = options.model ?? getDeepseekModel();
   const fetchImpl = options.fetchImpl ?? fetch;
   const thinking = getDeepseekThinking('extract');
+  const candidateSpans = requirementCandidateSpans(jobDescription);
+  if (candidateSpans.length === 0) {
+    throw new Error('No normative JD spans were identified; requirements cannot be frozen safely');
+  }
   const requestBody: Record<string, unknown> = {
     model,
     messages: [
       { role: 'system', content: REQUIREMENT_EXTRACTION_PROMPT },
-      { role: 'user', content: jobDescription.slice(0, 20_000) },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          job_description: jobDescription.slice(0, 20_000),
+          normative_spans_to_cover: candidateSpans,
+        }),
+      },
     ],
     max_tokens: 8192,
   };
@@ -265,21 +285,19 @@ export async function extractJobRequirements(
     if (!content) throw new Error('Requirement extraction returned an empty response');
     const requirements = createJobRequirements(parseRequirementDrafts(parseLLMJson(content, 'requirements')));
     if (requirements.length === 0) throw new Error('Requirement extraction returned no usable requirements');
-    const candidateSpans = requirementCandidateSpans(jobDescription);
-    if (candidateSpans.length === 0) {
-      throw new Error('No normative JD spans were identified; requirements cannot be frozen safely');
-    }
+    const coverageRequestBody: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: 'system', content: REQUIREMENT_COVERAGE_PROMPT },
+        { role: 'user', content: JSON.stringify({ candidate_spans: candidateSpans, requirements }) },
+      ],
+      max_tokens: 8192,
+    };
+    if (thinking) coverageRequestBody['thinking'] = thinking;
     const coverageResponse = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: REQUIREMENT_COVERAGE_PROMPT },
-          { role: 'user', content: JSON.stringify({ candidate_spans: candidateSpans, requirements }) },
-        ],
-        max_tokens: 8192,
-      }),
+      body: JSON.stringify(coverageRequestBody),
       signal: options.signal,
     });
     if (!coverageResponse.ok) {

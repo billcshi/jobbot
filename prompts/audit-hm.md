@@ -7,13 +7,14 @@ Return ONLY valid JSON:
 {
   "verdict": "phone_screen",
   "score": 72,
+  "summary": "Concise overall hiring-manager assessment.",
   "strengths": "What stands out positively...",
   "concerns": "What gives you pause...",
   "competitive_position": "How this candidate compares to others you'd expect for this role",
   "issues": [
     {
       "severity": "high",
-      "category": "experience",
+      "category": "content",
       "description": "Claims ownership of distributed systems but timeline shows ~2 years total experience",
       "suggestion": "Be more precise about scale and impact rather than inflating scope"
     }

@@ -14,6 +14,9 @@ import { validateResume } from '../resume/validate.js';
 import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
 
 const LATEX_TEMPLATE_PATH = `${PROJECT_ROOT}/resumes/master.tex`;
+// A fresh MiKTeX install may download template packages during the first run.
+// Thirty seconds is routinely too short on Windows and leaves a truncated log.
+const PDFLATEX_TIMEOUT_MS = 120_000;
 
 /** Escape special LaTeX characters in user-provided text. */
 function latexEscape(s: string | null | undefined): string {
@@ -192,7 +195,6 @@ export async function renderJob(jobId: number, visualFeedback?: string[], _compo
   // ---- Build template data ----
 
   const fullName = `${candidate.name.first} ${candidate.name.last}`;
-  const locationStr = `${candidate.location.city}, ${candidate.location.state}`;
   const githubUsername = candidate.links.github?.split('/').pop() ?? '';
   const linkedinUsername = candidate.links.linkedin?.split('/').pop() ?? '';
 
@@ -229,7 +231,21 @@ export async function renderJob(jobId: number, visualFeedback?: string[], _compo
   tex = tex.replace(/\{\{name\}\}/g, inject(fullName));
   tex = tex.replace(/\{\{email\}\}/g, inject(candidate.email));
   tex = tex.replace(/\{\{phone\}\}/g, inject(candidate.phone));
-  tex = tex.replace(/\{\{location\}\}/g, inject(locationStr));
+  const contactItems: string[] = [];
+  if (candidate.phone) contactItems.push(inject(candidate.phone));
+  if (candidate.email) {
+    const email = inject(candidate.email);
+    contactItems.push(`\\href{mailto:${email}}{${email}}`);
+  }
+  if (linkedinUsername) {
+    const linkedin = inject(linkedinUsername);
+    contactItems.push(`\\href{https://linkedin.com/in/${linkedin}}{linkedin.com/in/${linkedin}}`);
+  }
+  if (githubUsername) {
+    const github = inject(githubUsername);
+    contactItems.push(`\\href{https://github.com/${github}}{github.com/${github}}`);
+  }
+  tex = tex.replace(/\{\{contact_line\}\}/g, contactItems.join(' $|$ '));
 
   // ---- Build experience section ----
   const experienceItems = tailored.selected_experience;
@@ -241,6 +257,11 @@ export async function renderJob(jobId: number, visualFeedback?: string[], _compo
       item = item.replace(/\{\{company\}\}/g, inject(exp.company));
       item = item.replace(/\{\{title\}\}/g, inject(exp.title));
       item = item.replace(/\{\{date_range\}\}/g, inject(formatDateRange(exp.start, exp.end)));
+      const sourceIndex = Number.parseInt(exp.source_experience_id.split(':')[1] ?? '', 10);
+      const sourceLocation = Number.isInteger(sourceIndex)
+        ? candidate.work_experience[sourceIndex]?.location
+        : undefined;
+      item = item.replace(/\{\{location\}\}/g, inject(sourceLocation || ''));
 
       // Build highlights
       const hlMatch = item.match(/\{\{#highlights\}\}([\s\S]*?)\{\{\/highlights\}\}/);
@@ -445,12 +466,12 @@ export async function renderJob(jobId: number, visualFeedback?: string[], _compo
     // Run pdflatex twice for proper layout (TOC, cross-refs etc.)
     const outputDir = jobResumeDir(jobId);
     execSync(`pdflatex -interaction=nonstopmode -output-directory="${outputDir}" "${texPath}"`, {
-      timeout: 30_000,
+      timeout: PDFLATEX_TIMEOUT_MS,
       stdio: 'pipe',
     });
     throwIfAborted(signal);
     execSync(`pdflatex -interaction=nonstopmode -output-directory="${outputDir}" "${texPath}"`, {
-      timeout: 30_000,
+      timeout: PDFLATEX_TIMEOUT_MS,
       stdio: 'pipe',
     });
 

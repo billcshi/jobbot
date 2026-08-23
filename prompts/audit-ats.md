@@ -8,6 +8,7 @@ Return ONLY valid JSON with these fields:
 {
   "match_percentage": 65,
   "score": 65,
+  "summary": "Concise overall ATS assessment.",
   "strengths": "What keyword matches well...",
   "missing_keywords": ["distributed systems", "object storage", "exabyte scale"],
   "ats_readability": "Clean text, standard sections. Issues: contact line symbols...",

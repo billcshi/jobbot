@@ -6,6 +6,7 @@ Return ONLY valid JSON:
 ```json
 {
   "score": 80,
+  "summary": "Concise overall formatting assessment.",
   "one_page": true,
   "section_order_correct": true,
   "formatting_issues": ["Education coursework list exceeds 2 lines", "Summary could be 1 line shorter"],
