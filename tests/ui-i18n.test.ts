@@ -24,6 +24,10 @@ describe('UI localization', () => {
     expect(i18n).toContain('window.alert =');
     expect(i18n).toContain('window.confirm =');
     expect(i18n).toContain("closest?.('[data-i18n-skip]')");
+    expect(i18n).toContain("closest?.('[data-i18n]')");
+    expect(readView('_head.ejs')).toContain('<nav data-i18n>');
+    expect(readView('_head.ejs')).toContain('<div class="container" data-i18n>');
+    expect(readView('login.ejs')).toContain('<main data-i18n>');
     expect(i18n).toContain("title[data-i18n-skip]");
     expect(readView('job-detail.ejs')).toContain('localizeTitle: false');
     expect(readView('job-detail.ejs')).toContain('data-i18n-skip><%= job.discovered_at %>');
@@ -83,12 +87,24 @@ describe('UI localization', () => {
       nodeType: 3,
       nodeValue: 'Dashboard',
       parentElement: {
-        closest: (selector: string) => selector === '[data-i18n-skip]' ? {} : null,
+        closest: (selector: string) => selector === '[data-i18n-skip]' || selector === '[data-i18n]' ? {} : null,
+      },
+    };
+    const unmarkedBusinessText = {
+      nodeType: 3,
+      nodeValue: 'Profile',
+      parentElement: { closest: () => null },
+    };
+    const markedUiText = {
+      nodeType: 3,
+      nodeValue: 'Dashboard',
+      parentElement: {
+        closest: (selector: string) => selector === '[data-i18n]' ? {} : null,
       },
     };
     const body = {
       nodeType: 1,
-      childNodes: [skippedBusinessText] as unknown[],
+      childNodes: [skippedBusinessText, unmarkedBusinessText, markedUiText] as unknown[],
       matches: () => false,
       hasAttribute: () => false,
       getAttribute: () => null,
@@ -99,6 +115,7 @@ describe('UI localization', () => {
       body,
       documentElement: { lang: 'en' },
       addEventListener: () => undefined,
+      querySelector: () => null,
       querySelectorAll: () => [] as unknown[],
     };
     interface TestI18n {
@@ -142,6 +159,8 @@ describe('UI localization', () => {
     expect(i18n?.translate('Dashboard')).toBe('仪表盘');
     expect(document.title).toBe('JobBot — 仪表盘');
     expect(skippedBusinessText.nodeValue).toBe('Dashboard');
+    expect(unmarkedBusinessText.nodeValue).toBe('Profile');
+    expect(markedUiText.nodeValue).toBe('仪表盘');
     expect(stored.get('jobbot-locale')).toBe('zh-CN');
 
     i18n?.setLocale('en');

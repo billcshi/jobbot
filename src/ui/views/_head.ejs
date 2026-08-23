@@ -390,7 +390,7 @@
   <%
     const selectedNav = typeof activeNav === 'string' ? activeNav : '';
   %>
-  <nav>
+  <nav data-i18n>
     <a href="/" class="logo">JobBot</a>
     <a href="/" class="nav-link<%= selectedNav === 'dashboard' ? ' active' : '' %>"<% if (selectedNav === 'dashboard') { %> aria-current="page"<% } %>>Dashboard</a>
     <a href="/add-urls" class="nav-link<%= selectedNav === 'add-urls' ? ' active' : '' %>"<% if (selectedNav === 'add-urls') { %> aria-current="page"<% } %>>Add URLs</a>
@@ -405,4 +405,4 @@
         style="background:var(--bg);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Log out</button>
     </div>
   </nav>
-  <div class="container">
+  <div class="container" data-i18n>

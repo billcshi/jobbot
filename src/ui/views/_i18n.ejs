@@ -344,7 +344,7 @@
   }
 
   function translateTextNode(node) {
-    if (isTranslationSkipped(node)) return;
+    if (isTranslationSkipped(node) || !isTranslationTargeted(node)) return;
     const current = node.nodeValue || '';
     const previous = textState.get(node);
     const source = previous && current === previous.rendered ? previous.source : current;
@@ -358,7 +358,7 @@
   }
 
   function translateAttribute(element, name) {
-    if (isTranslationSkipped(element)) return;
+    if (isTranslationSkipped(element) || !isTranslationTargeted(element)) return;
     if (!element.hasAttribute(name)) return;
     let state = attributeState.get(element);
     if (!state) {
@@ -376,6 +376,11 @@
   function isTranslationSkipped(node) {
     const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
     return Boolean(element?.closest?.('[data-i18n-skip]'));
+  }
+
+  function isTranslationTargeted(node) {
+    const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    return Boolean(element?.closest?.('[data-i18n]'));
   }
 
   function translateTree(root = document.body) {
@@ -441,7 +446,7 @@
 
   const observer = new MutationObserver(mutations => {
     for (const mutation of mutations) {
-      if (mutation.type === 'characterData' && !isTranslationSkipped(mutation.target)) translateTextNode(mutation.target);
+      if (mutation.type === 'characterData' && !isTranslationSkipped(mutation.target) && isTranslationTargeted(mutation.target)) translateTextNode(mutation.target);
       for (const node of mutation.addedNodes) {
         if ((node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) && !isTranslationSkipped(node)) translateTree(node);
       }
