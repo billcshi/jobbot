@@ -1,10 +1,10 @@
-<%- include('_head', { title: job.title || ('Job #' + job.id) }) %>
+<%- include('_head', { title: job.title || ('Job #' + job.id), activeNav: 'dashboard', localizeTitle: false }) %>
 
 <a href="/" class="back-link">← Back to Dashboard</a>
 
 <!-- job header -->
 <div class="job-header" style="display:flex;justify-content:space-between;align-items:flex-start">
-  <div>
+  <div data-i18n-skip>
     <h1><%= job.title || 'Untitled' %></h1>
     <p class="meta">
       <strong><%= job.company || 'Unknown Company' %></strong>
@@ -12,7 +12,7 @@
       <% if (job.ats_type) { %> · <span style="color:var(--text-dim);font-size:12px"><%= job.ats_type %></span><% } %>
     </p>
   </div>
-  <span class="delete-link" onclick="deleteJob(<%= job.id %>, '<%= (job.title || 'Untitled').replace(/'/g, "\\'") %>')" title="Delete this job">🗑️ Delete</span>
+  <span class="delete-link" data-job-id="<%= job.id %>" data-job-title="<%= job.title || 'Untitled' %>" onclick="deleteJob(Number(this.dataset.jobId), this.dataset.jobTitle)" title="Delete this job">🗑️ Delete</span>
 </div>
 
 <!-- pipeline tracker -->
@@ -116,7 +116,7 @@
   </div>
   <p style="margin-top:12px;font-size:12px;color:var(--text-dim)">
     Status: <strong style="color:var(--text)"><%= helpers.statusLabel(job.status) %></strong>
-    &nbsp;·&nbsp; Added <%= job.discovered_at %>
+    &nbsp;·&nbsp; Added <span data-i18n-skip><%= job.discovered_at %></span>
     &nbsp;·&nbsp; <span id="run-from-status" style="color:var(--accent)"></span>
   </p>
 </div>
@@ -126,7 +126,7 @@
 
   <!-- score card -->
   <div class="card">
-    <h2>Score <span style="font-size:11px;color:var(--text-dim);font-weight:400">(<%= userName %>)</span></h2>
+    <h2>Score <span data-i18n-skip style="font-size:11px;color:var(--text-dim);font-weight:400">(<%= userName %>)</span></h2>
     <% const dScore = (typeof displayScore !== 'undefined' && displayScore != null) ? displayScore : job.score;
        const dTier = (typeof displayTier !== 'undefined' && displayTier) ? displayTier : job.tier; %>
     <% if (dScore != null) { %>
@@ -139,7 +139,7 @@
         <span class="badge <%= helpers.tierClass(dTier) %>" style="font-size:14px;padding:4px 12px"><%= helpers.tierLabel(dTier) %></span>
       </div>
       <% if (reasonParagraphs.length > 0) { %>
-        <div class="score-reason">
+        <div class="score-reason" data-i18n-skip>
           <% for (const p of reasonParagraphs) { %>
             <p><%= p.trim() %></p>
           <% } %>
@@ -168,7 +168,7 @@
             const sTitle = (sParts[1] || '?').replace(/_/g, ' ');
             const sLoc = (sParts[2] || '?').replace(/_/g, ' ');
           %>
-          <div style="font-size:12px;margin-bottom:3px;display:flex;justify-content:space-between">
+          <div data-i18n-skip style="font-size:12px;margin-bottom:3px;display:flex;justify-content:space-between">
             <span style="color:var(--text-muted)"><%= sTitle %> · <%= sLoc %></span>
             <span style="color:var(--green);font-weight:600"><%= s.value %></span>
           </div>
@@ -178,7 +178,7 @@
 
       <% if (skillMarket.length > 0) { %>
         <h3 style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Top Skills in Market</h3>
-        <div style="display:flex;flex-wrap:wrap;gap:4px">
+        <div data-i18n-skip style="display:flex;flex-wrap:wrap;gap:4px">
           <% for (const sk of skillMarket.slice(0, 12)) { %>
             <%
               const skName = sk.key.split('.').slice(1).join('.').replace(/_/g, ' ');
@@ -197,7 +197,7 @@
             const tName = t.key.split('.').slice(1).join('.').replace(/_/g, ' ');
             const tPct = (parseFloat(t.value) * 100).toFixed(0);
           %>
-          <div style="font-size:12px;color:var(--text-muted);margin-bottom:2px">
+          <div data-i18n-skip style="font-size:12px;color:var(--text-muted);margin-bottom:2px">
             <%= tName %> <span style="color:var(--text-dim)">(<%= tPct %>% of market)</span>
           </div>
         <% } %>
@@ -215,10 +215,10 @@
   <div class="card">
     <h2>Extracted Data</h2>
     <% if (job.title) { %>
-      <div class="detail-row"><span class="detail-label">Title</span><span class="detail-value"><%= job.title %></span></div>
-      <div class="detail-row"><span class="detail-label">Company</span><span class="detail-value"><%= job.company || '-' %></span></div>
-      <div class="detail-row"><span class="detail-label">Location</span><span class="detail-value"><%= job.location || '-' %></span></div>
-      <div class="detail-row"><span class="detail-label">ATS</span><span class="detail-value"><%= job.ats_type %></span></div>
+      <div class="detail-row"><span class="detail-label">Title</span><span class="detail-value" data-i18n-skip><%= job.title %></span></div>
+      <div class="detail-row"><span class="detail-label">Company</span><span class="detail-value" data-i18n-skip><%= job.company || '-' %></span></div>
+      <div class="detail-row"><span class="detail-label">Location</span><span class="detail-value" data-i18n-skip><%= job.location || '-' %></span></div>
+      <div class="detail-row"><span class="detail-label">ATS</span><span class="detail-value" data-i18n-skip><%= job.ats_type %></span></div>
       <% if (typeof jobSalaries !== 'undefined' && jobSalaries.length > 0) { %>
       <div class="detail-row">
         <span class="detail-label">Salary</span>
@@ -235,16 +235,16 @@
         <span class="detail-label">Skills</span>
         <span class="detail-value">
           <% for (let si = 0; si < Math.min(jobSkills.length, 20); si++) { %>
-            <span style="background:rgba(88,166,255,0.1);color:var(--accent);font-size:11px;padding:1px 8px;border-radius:10px;margin-right:4px;margin-bottom:4px;display:inline-block"><%= jobSkills[si] %></span>
+          <span data-i18n-skip style="background:rgba(88,166,255,0.1);color:var(--accent);font-size:11px;padding:1px 8px;border-radius:10px;margin-right:4px;margin-bottom:4px;display:inline-block"><%= jobSkills[si] %></span>
           <% } %>
           <% if (jobSkills.length > 20) { %><span style="font-size:11px;color:var(--text-dim)">+<%= jobSkills.length - 20 %> more</span><% } %>
         </span>
       </div>
       <% } %>
       <% if (job.apply_url) { %>
-      <div class="detail-row"><span class="detail-label">Apply URL</span><span class="detail-value"><a href="<%= job.apply_url %>" target="_blank"><%= helpers.truncate(job.apply_url, 50) %></a></span></div>
+      <div class="detail-row"><span class="detail-label">Apply URL</span><span class="detail-value" data-i18n-skip><a href="<%= helpers.safeExternalUrl(job.apply_url) %>" target="_blank" rel="noopener noreferrer"><%= helpers.truncate(job.apply_url, 50) %></a></span></div>
       <% } %>
-      <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value"><a href="<%= job.url %>" target="_blank"><%= helpers.truncate(job.url, 50) %></a></span></div>
+      <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value" data-i18n-skip><a href="<%= helpers.safeExternalUrl(job.url) %>" target="_blank" rel="noopener noreferrer"><%= helpers.truncate(job.url, 50) %></a></span></div>
       <div class="regenerate-row">
         <input type="text" id="instr-extract" class="instr-input" placeholder="Optional: AI instruction for re-extract..." />
         <button class="btn-regen" onclick="regenerate('extract', 'instr-extract')">🔄 Re-extract</button>
@@ -259,7 +259,7 @@
   <div class="card">
     <h2>Job Description</h2>
     <% if (job.description) { %>
-      <div class="description-box"><%= job.description %></div>
+      <div class="description-box" data-i18n-skip><%= job.description %></div>
     <% } else { %>
       <p style="color:var(--text-dim)">No description extracted yet.</p>
     <% } %>
@@ -273,7 +273,7 @@
     <% if (resumeVersion && resumeVersion.pdf_path) { %>
       <div>
         <a href="<%= '/resumes/' + job.id + '/resume.pdf' %>" class="btn-link" download="<%= resumeDownloadName %>">📥 Download Resume PDF</a>
-        <p style="font-size:11px;color:var(--text-dim);margin-top:4px"><%= resumeVersion.pdf_path %></p>
+        <p data-i18n-skip style="font-size:11px;color:var(--text-dim);margin-top:4px"><%= resumeVersion.pdf_path %></p>
       </div>
     <% } else { %>
       <p style="color:var(--text-dim);font-size:13px">No resume PDF yet.</p>
@@ -329,7 +329,7 @@
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><%= allIssues.length %> issue(s) found (<%= (auditData.contentIssues || []).length %> content, <%= (auditData.visualIssues || []).length %> visual)</p>
       <ul style="font-size:12px;color:var(--text-muted);padding-left:18px;line-height:1.8">
         <% for (const issue of allIssues) { %>
-          <li><%= typeof issue === 'string' ? issue : (issue.description || issue.issue || JSON.stringify(issue)) %></li>
+          <li data-i18n-skip><%= typeof issue === 'string' ? issue : (issue.description || issue.issue || JSON.stringify(issue)) %></li>
         <% } %>
       </ul>
     <% } else { %>
@@ -356,19 +356,19 @@
     <div style="font-size:13px;color:var(--text-muted)">
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
         <div><strong style="color:var(--text)">Status:</strong>
-          <span class="badge" style="background:rgba(88,166,255,0.15);color:var(--accent);font-size:12px"><%= application.status %></span>
+          <span class="badge" data-i18n-skip style="background:rgba(88,166,255,0.15);color:var(--accent);font-size:12px"><%= application.status %></span>
         </div>
         <% if (application.submitted_at) { %>
-          <div><strong style="color:var(--text)">Submitted:</strong> <%= application.submitted_at %></div>
+          <div><strong style="color:var(--text)">Submitted:</strong> <span data-i18n-skip><%= application.submitted_at %></span></div>
         <% } %>
         <% if (application.response_type) { %>
           <div><strong style="color:var(--text)">Response:</strong>
-            <span style="color:<%= application.response_type === 'rejected' ? 'var(--red)' : 'var(--green)' %>"><%= application.response_type %></span>
-            <% if (application.responded_at) { %> <span style="color:var(--text-dim);font-size:11px">(<%= application.responded_at %>)</span><% } %>
+            <span data-i18n-skip style="color:<%= application.response_type === 'rejected' ? 'var(--red)' : 'var(--green)' %>"><%= application.response_type %></span>
+            <% if (application.responded_at) { %> <span data-i18n-skip style="color:var(--text-dim);font-size:11px">(<%= application.responded_at %>)</span><% } %>
           </div>
         <% } %>
         <% if (application.notes) { %>
-          <div><strong style="color:var(--text)">Notes:</strong> <%= application.notes %></div>
+          <div><strong style="color:var(--text)">Notes:</strong> <span data-i18n-skip><%= application.notes %></span></div>
         <% } %>
       </div>
     </div>
@@ -414,9 +414,9 @@
             '#6e7681';
           %>
           <div style="position:absolute;left:-18px;top:11px;width:8px;height:8px;border-radius:50%;background:<%= dotColor %>;border:2px solid var(--bg);z-index:1"></div>
-          <span style="color:var(--text-dim);font-size:11px;margin-right:8px"><%= e.created_at %></span>
-          <span style="color:var(--text);font-weight:600"><%= e.event_type %></span>
-          <% if (e.description) { %><span style="color:var(--text-muted)"> — <%= e.description %></span><% } %>
+          <span data-i18n-skip style="color:var(--text-dim);font-size:11px;margin-right:8px"><%= e.created_at %></span>
+          <span data-i18n-skip style="color:var(--text);font-weight:600"><%= e.event_type %></span>
+          <% if (e.description) { %><span data-i18n-skip style="color:var(--text-muted)"> — <%= e.description %></span><% } %>
         </div>
       <% } %>
     </div>

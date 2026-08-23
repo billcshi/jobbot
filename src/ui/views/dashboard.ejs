@@ -1,4 +1,4 @@
-<%- include('_head', { title: 'Dashboard' }) %>
+<%- include('_head', { title: 'Dashboard', activeNav: 'dashboard' }) %>
 
 <h1 style="font-size:20px;font-weight:600;margin-bottom:20px;">Job Pipeline</h1>
 
@@ -73,7 +73,7 @@
   <h2>Top Companies</h2>
   <div style="display:flex;flex-wrap:wrap;gap:6px">
     <% for (const c of topCompanies) { %>
-      <span class="stat" style="font-size:12px"><%= c.company %> <strong style="font-size:13px"><%= c.count %></strong></span>
+      <span class="stat" data-i18n-skip style="font-size:12px"><%= c.company %> <strong style="font-size:13px"><%= c.count %></strong></span>
     <% } %>
   </div>
 </div>
@@ -147,12 +147,12 @@
           <td><%= job.id %></td>
           <td><span class="badge <%= helpers.tierClass(job._displayTier) %>"><%= helpers.tierLabel(job._displayTier) %></span></td>
           <td style="font-variant-numeric:tabular-nums"><%= helpers.scoreFmt(job._displayScore) %></td>
-          <td><%= helpers.truncate(job.company, 25) %></td>
-          <td style="max-width:250px"><%= helpers.truncate(job.title, 40) %></td>
-          <td><%= job.ats_type %></td>
+          <td data-i18n-skip><%= helpers.truncate(job.company, 25) %></td>
+          <td data-i18n-skip style="max-width:250px"><%= helpers.truncate(job.title, 40) %></td>
+          <td data-i18n-skip><%= job.ats_type %></td>
           <td><span class="status-badge"><%= helpers.statusLabel(job.status) %></span></td>
-          <td><a href="<%= job.url %>" class="url-link" onclick="event.stopPropagation()" target="_blank" title="<%= job.url %>"><%= helpers.truncate(job.url, 35) %></a></td>
-          <td><button class="delete-btn" onclick="event.stopPropagation(); deleteJob(<%= job.id %>, '<%= (job.title || 'Untitled').replace(/'/g, "\\'") %>')" title="Delete">✕</button></td>
+          <td data-i18n-skip><a href="<%= helpers.safeExternalUrl(job.url) %>" class="url-link" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" title="<%= job.url %>"><%= helpers.truncate(job.url, 35) %></a></td>
+          <td><button class="delete-btn" data-job-id="<%= job.id %>" data-job-title="<%= job.title || 'Untitled' %>" onclick="event.stopPropagation(); deleteJob(Number(this.dataset.jobId), this.dataset.jobTitle)" title="Delete">✕</button></td>
         </tr>
       <% } %>
     </tbody>

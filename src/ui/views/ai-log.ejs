@@ -1,4 +1,4 @@
-<%- include('_head', { title: 'AI Call Log' }) %>
+<%- include('_head', { title: 'AI Call Log', activeNav: 'ai-log' }) %>
 
 <h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">AI Call Log</h1>
 <p style="color:var(--text-muted);margin-bottom:8px;font-size:13px">
@@ -11,7 +11,7 @@
     <select onchange="filterTable(this.value)" id="op-filter">
       <option value="">All</option>
       <% for (const op of operations) { %>
-        <option value="<%= op %>"><%= op %></option>
+          <option data-i18n-skip value="<%= op %>"><%= op %></option>
       <% } %>
     </select>
   </label>
@@ -54,11 +54,11 @@
     <tbody>
       <% for (const e of entries) { %>
         <tr>
-          <td style="white-space:nowrap;font-size:11px;color:var(--text-dim)"><%= e.time %></td>
-          <td><span class="op-badge op-<%= e.operation %>"><%= e.operation %></span></td>
-          <td style="font-size:11px;color:var(--text-dim)"><%= e.model.split('-')[0] %></td>
-          <td style="max-width:160px;font-size:12px" title="<%= e.requestSummary %>"><%= e.requestSummary.slice(0, 50) %><%= e.requestSummary.length > 50 ? '…' : '' %></td>
-          <td style="max-width:160px;font-size:12px" title="<%= e.responseSummary %>"><%= e.responseSummary.slice(0, 50) %><%= e.responseSummary.length > 50 ? '…' : '' %></td>
+          <td data-i18n-skip style="white-space:nowrap;font-size:11px;color:var(--text-dim)"><%= e.time %></td>
+          <td data-i18n-skip><span class="op-badge op-<%= e.operation %>"><%= e.operation %></span></td>
+          <td data-i18n-skip style="font-size:11px;color:var(--text-dim)"><%= e.model.split('-')[0] %></td>
+          <td data-i18n-skip style="max-width:160px;font-size:12px" title="<%= e.requestSummary %>"><%= e.requestSummary.slice(0, 50) %><%= e.requestSummary.length > 50 ? '…' : '' %></td>
+          <td data-i18n-skip style="max-width:160px;font-size:12px" title="<%= e.responseSummary %>"><%= e.responseSummary.slice(0, 50) %><%= e.responseSummary.length > 50 ? '…' : '' %></td>
           <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Input tokens"><%= e.promptTokens?.toLocaleString() || '-' %></td>
           <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Output tokens"><%= e.completionTokens?.toLocaleString() || '-' %></td>
           <td style="font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;text-align:right" title="Cached tokens"><%= e.cachedTokens ? e.cachedTokens.toLocaleString() : '-' %></td>

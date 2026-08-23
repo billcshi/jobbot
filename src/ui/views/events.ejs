@@ -1,4 +1,4 @@
-<%- include('_head', { title: 'Event Timeline' }) %>
+<%- include('_head', { title: 'Event Timeline', activeNav: 'events' }) %>
 
 <h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">Event Timeline</h1>
 <p style="color:var(--text-muted);margin-bottom:20px;font-size:13px">Every state transition across all jobs. From URL ingestion to audit pass/fail.</p>
@@ -13,7 +13,7 @@
           if (e.job_id && !shown.has(e.job_id)) {
             shown.add(e.job_id);
       %>
-          <option value="<%= e.job_id %>" <%= filters.job == e.job_id ? 'selected' : '' %>>#<%= e.job_id %> — <%= e.job_title || e.job_company || 'Deleted' %></option>
+        <option data-i18n-skip value="<%= e.job_id %>" <%= filters.job == e.job_id ? 'selected' : '' %>>#<%= e.job_id %> — <%= e.job_title || e.job_company || 'Deleted' %></option>
       <% } } %>
     </select>
   </label>
@@ -21,7 +21,7 @@
     <select onchange="filter('type', this.value)">
       <option value="">All</option>
       <% for (const t of eventTypes) { %>
-        <option value="<%= t %>" <%= filters.type === t ? 'selected' : '' %>><%= t %></option>
+        <option data-i18n-skip value="<%= t %>" <%= filters.type === t ? 'selected' : '' %>><%= t %></option>
       <% } %>
     </select>
   </label>
@@ -35,10 +35,10 @@
       <div class="tl-entry">
         <div class="tl-dot dot-<%= e.event_type %>"></div>
         <div class="tl-content">
-          <span class="tl-time"><%= e.created_at %></span>
-          <a href="/jobs/<%= e.job_id %>" class="tl-job">#<%= e.job_id %><% if (e.job_title) { %> — <%= e.job_title.slice(0, 40) %><% } %></a>
-          <span class="tl-badge badge-<%= e.event_type %>"><%= e.event_type %></span>
-          <span class="tl-desc"><%= e.description || '' %></span>
+        <span class="tl-time" data-i18n-skip><%= e.created_at %></span>
+          <a href="/jobs/<%= e.job_id %>" class="tl-job" data-i18n-skip>#<%= e.job_id %><% if (e.job_title) { %> — <%= e.job_title.slice(0, 40) %><% } %></a>
+        <span class="tl-badge badge-<%= e.event_type %>" data-i18n-skip><%= e.event_type %></span>
+          <span class="tl-desc" data-i18n-skip><%= e.description || '' %></span>
         </div>
       </div>
     <% } %>

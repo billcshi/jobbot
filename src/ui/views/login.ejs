@@ -29,9 +29,16 @@
     .submit:disabled { opacity: .6; cursor: wait; }
     .error { min-height: 18px; margin: 14px 0 0; color: #ff7b72; font-size: 13px; text-align: center; }
     .hidden { display: none; }
+    .language-toggle {
+      position: fixed; top: 18px; right: 18px; border: 1px solid #30363d;
+      border-radius: 7px; padding: 6px 12px; background: #161b22; color: #58a6ff;
+      font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .language-toggle:hover { border-color: #58a6ff; }
   </style>
 </head>
 <body>
+  <button type="button" class="language-toggle" data-language-toggle>中文</button>
   <main>
     <div class="brand">
       <h1>JobBot</h1>
@@ -62,6 +69,7 @@
       <p class="error" id="error" role="alert"></p>
     </section>
   </main>
+  <%- include('_i18n') %>
   <script>
     let mode = 'login';
     const setupParams = new URLSearchParams(window.location.search);
