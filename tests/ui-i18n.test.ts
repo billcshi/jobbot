@@ -5,6 +5,23 @@ import { describe, expect, it } from 'vitest';
 const views = path.join(process.cwd(), 'src', 'ui', 'views');
 const readView = (name: string): string => readFileSync(path.join(views, name), 'utf8');
 
+function discoverMessage(
+  locale: 'en' | 'zh-CN',
+  code: string,
+  detail?: string,
+): string {
+  const source = readView('add-urls.ejs').replace(/\r\n/g, '\n');
+  const start = source.indexOf('  function discoverErrorMessage');
+  const end = source.indexOf('\n  }\n</script>', start);
+  if (start < 0 || end < 0) throw new Error('discoverErrorMessage function was not found');
+  const functionSource = source.slice(start, end + '\n  }'.length);
+  const load = new Function(
+    'window',
+    `${functionSource}\nreturn discoverErrorMessage;`,
+  ) as (browserWindow: unknown) => (errorCode: string, errorDetail?: string) => string;
+  return load({ jobbotI18n: { locale } })(code, detail);
+}
+
 describe('UI localization', () => {
   it('offers a language switch before and after authentication', () => {
     expect(readView('login.ejs')).toContain('data-language-toggle');
@@ -72,6 +89,13 @@ describe('UI localization', () => {
     expect(i18n).toContain("'e.g. backend engineer': '例如：backend engineer（请使用英文）'");
     expect(i18n).toContain("'Enter the city name in English.': '请使用英文城市名。'");
     expect(i18n).toContain("'No matching jobs found.': '来源可用，但没有找到匹配的职位。'");
+  });
+
+  it('renders the main discovery failures in Chinese from stable error codes', () => {
+    expect(discoverMessage('zh-CN', 'DISCOVER_QUERY_REQUIRED')).toBe('请输入搜索关键词。');
+    expect(discoverMessage('zh-CN', 'DISCOVER_FAILED', 'HTTP 503')).toBe('职位搜索失败。 HTTP 503');
+    expect(discoverMessage('zh-CN', 'DISCOVER_SOURCE_INVALID')).toBe('未知的职位来源。');
+    expect(discoverMessage('zh-CN', 'DISCOVER_NETWORK_ERROR')).toBe('职位搜索网络请求失败。');
   });
 
   it('switches both ways and remembers the selected locale', () => {
