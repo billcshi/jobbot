@@ -5,6 +5,7 @@ import {
   profileAllowsExternalAiEdit,
   profileYamlForAiDraft,
 } from '../src/ui/server';
+import { isHttpUrl, parseHttpUrl } from '../src/utils/url.js';
 
 describe('web mutation security', () => {
   it('accepts a localhost same-origin browser mutation', () => {
@@ -31,6 +32,15 @@ describe('web mutation security', () => {
 
   it('does not restrict read-only requests', () => {
     expect(isTrustedMutationRequest({ method: 'GET' })).toBe(true);
+  });
+
+  it('allows only absolute HTTP(S) job links', () => {
+    expect(isHttpUrl('https://jobs.example.com/backend?id=1')).toBe(true);
+    expect(isHttpUrl('http://jobs.example.com/backend')).toBe(true);
+    expect(parseHttpUrl("javascript:alert('xss')")).toBeNull();
+    expect(parseHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(parseHttpUrl('/relative/job')).toBeNull();
+    expect(parseHttpUrl('https://user:password@example.com/job')).toBeNull();
   });
 
   it('allows review-first AI editing for both profile sections', () => {

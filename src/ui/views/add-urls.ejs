@@ -1,4 +1,4 @@
-<%- include('_head', { title: 'Add URLs' }) %>
+<%- include('_head', { title: 'Add URLs', activeNav: 'add-urls' }) %>
 
 <h1 style="font-size:20px;font-weight:600;margin-bottom:8px;">Add Jobs</h1>
 <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">Paste job posting URLs — one per line — to add them to your pipeline.</p>
@@ -40,23 +40,48 @@
 <div class="card">
   <h2>Discover Jobs</h2>
   <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Search job boards for new postings.</p>
+  <p style="color:var(--yellow);font-size:12px;margin:-4px 0 12px">Use English only for job keywords and city names (for example: backend engineer, Seattle). Do not enter Chinese.</p>
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
     <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
       Query
       <input id="discover-query" type="text" placeholder="e.g. backend engineer" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:200px">
     </label>
     <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
-      Location
-      <input id="discover-location" type="text" placeholder="e.g. Seattle (optional)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:160px">
+      Work location
+      <input id="discover-location" type="text" placeholder="e.g. Seattle" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:160px">
+      <span style="font-size:10px;color:var(--text-dim)">Enter the city name in English.</span>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Work mode
+      <select id="discover-work-mode" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px">
+        <option value="any">Any work mode</option>
+        <option value="onsite">On-site / hybrid</option>
+        <option value="remote">Remote</option>
+      </select>
+      <span style="font-size:10px;color:var(--text-dim)">Any includes on-site, hybrid, and remote sources.</span>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Search depth
+      <select id="discover-depth" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px">
+        <option value="quick">Quick search</option>
+        <option value="deep">Deep search</option>
+      </select>
+      <span style="font-size:10px;color:var(--text-dim)">Deep search scans additional pages within a fixed request and time budget.</span>
+    </label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
+      Company board
+      <input id="discover-company" type="text" placeholder="Required for ATS sources" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px;min-width:170px">
     </label>
     <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted)">
       Source
       <select id="discover-source" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px">
-        <option value="">All sources</option>
+        <option value="">All available sources</option>
+        <option value="themuse">The Muse (international)</option>
+        <option value="jobicy">Jobicy</option>
+        <option value="remotive">Remotive</option>
         <option value="greenhouse">Greenhouse</option>
         <option value="lever">Lever</option>
         <option value="ashby">Ashby</option>
-        <option value="linkedin">LinkedIn</option>
       </select>
     </label>
     <button id="btn-discover" class="btn-primary" onclick="discoverJobs()">Search</button>
@@ -151,14 +176,26 @@
     const tbody = document.getElementById('results-body');
 
     div.style.display = 'block';
-    summary.innerHTML = [
-      `<span class="result-new">✓ ${data.added} added</span>`,
-      data.duplicates > 0 ? `<span class="result-duplicate"> · ⚠ ${data.duplicates} duplicate(s)</span>` : '',
-      data.errors > 0 ? `<span class="result-error"> · ✕ ${data.errors} error(s)</span>` : '',
-      data.message ? `<br><span style="color:var(--text-muted)">${data.message}</span>` : '',
-    ].join('');
+    summary.replaceChildren();
+    const addSummaryPart = (text, className) => {
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = text;
+      summary.appendChild(span);
+    };
+    addSummaryPart(`✓ ${data.added} added`, 'result-new');
+    if (data.duplicates > 0) addSummaryPart(` · ⚠ ${data.duplicates} duplicate(s)`, 'result-duplicate');
+    if (data.errors > 0) addSummaryPart(` · ✕ ${data.errors} error(s)`, 'result-error');
+    if (data.message) {
+      summary.appendChild(document.createElement('br'));
+      const message = document.createElement('span');
+      message.style.color = 'var(--text-muted)';
+      message.textContent = String(data.message);
+      summary.appendChild(message);
+    }
 
-    tbody.innerHTML = data.results.map(r => {
+    tbody.replaceChildren();
+    for (const r of data.results || []) {
       let status, statusClass;
       if (!r.added) {
         status = '✕ Error';
@@ -171,26 +208,63 @@
         statusClass = 'result-new';
       }
 
-      const id = r.id ? `#${r.id}` : '-';
-      const ats = r.atsType || '-';
-      const url = r.url || '-';
-      const error = r.error ? `<br><span style="color:var(--red);font-size:11px">${r.error}</span>` : '';
+      const row = document.createElement('tr');
+      const statusCell = document.createElement('td');
+      const statusSpan = document.createElement('span');
+      statusSpan.className = statusClass;
+      statusSpan.textContent = status;
+      statusCell.appendChild(statusSpan);
+      if (r.error) {
+        statusCell.appendChild(document.createElement('br'));
+        const errorSpan = document.createElement('span');
+        errorSpan.style.cssText = 'color:var(--red);font-size:11px';
+        errorSpan.textContent = String(r.error);
+        statusCell.appendChild(errorSpan);
+      }
+      row.appendChild(statusCell);
 
-      return `<tr>
-        <td><span class="${statusClass}">${status}</span>${error}</td>
-        <td style="font-variant-numeric:tabular-nums">${id}</td>
-        <td>${ats}</td>
-        <td style="max-width:400px;word-break:break-all;font-size:12px"><a href="${url}" target="_blank" style="color:var(--accent)">${url}</a></td>
-      </tr>`;
-    }).join('');
+      const idCell = document.createElement('td');
+      idCell.style.fontVariantNumeric = 'tabular-nums';
+      idCell.textContent = r.id ? `#${r.id}` : '-';
+      row.appendChild(idCell);
+
+      const atsCell = document.createElement('td');
+      atsCell.textContent = r.atsType || '-';
+      row.appendChild(atsCell);
+
+      const urlCell = document.createElement('td');
+      urlCell.dataset.i18nSkip = '';
+      urlCell.style.cssText = 'max-width:400px;word-break:break-all;font-size:12px';
+      const safeUrl = safeHttpUrl(r.url);
+      if (safeUrl) {
+        const link = document.createElement('a');
+        link.href = safeUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.style.color = 'var(--accent)';
+        link.textContent = String(r.url);
+        urlCell.appendChild(link);
+      } else {
+        urlCell.textContent = r.url || '-';
+      }
+      row.appendChild(urlCell);
+      tbody.appendChild(row);
+    }
   }
 
   async function discoverJobs() {
     const query = document.getElementById('discover-query').value.trim();
-    if (!query) { alert('Enter a search query.'); return; }
+    if (!query) { alert(discoverErrorMessage('DISCOVER_QUERY_REQUIRED')); return; }
 
     const location = document.getElementById('discover-location').value.trim();
+    const workMode = document.getElementById('discover-work-mode').value;
+    const searchDepth = document.getElementById('discover-depth').value;
+    const company = document.getElementById('discover-company').value.trim();
     const source = document.getElementById('discover-source').value;
+    if (searchDepth === 'deep' && !location && (!source || source === 'themuse')) {
+      alert(discoverErrorMessage('DISCOVER_LOCATION_REQUIRED'));
+      return;
+    }
 
     const btn = document.getElementById('btn-discover');
     btn.disabled = true;
@@ -198,7 +272,10 @@
 
     try {
       const params = new URLSearchParams({ query });
+      params.set('workMode', workMode);
+      params.set('searchDepth', searchDepth);
       if (location) params.set('location', location);
+      if (company) params.set('company', company);
       if (source) params.set('source', source);
 
       const resp = await fetch(`/api/discover?${params}`);
@@ -207,42 +284,69 @@
       const div = document.getElementById('discover-results');
       div.style.display = 'block';
 
-      if (!data.ok || data.results.length === 0) {
-        div.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No results found.</p>';
+      if (!resp.ok || !data.ok) {
+        div.innerHTML = `<p class="result-error" style="font-size:13px">${esc(discoverErrorMessage(data.errorCode, data.error || `HTTP ${resp.status}`))}</p>`;
         return;
       }
 
+      const diagnostics = renderDiagnostics(data.diagnostics || []);
+      if (data.results.length === 0) {
+        div.innerHTML = '<p style="color:var(--text-dim);font-size:13px">No matching jobs found.</p>' + diagnostics;
+        return;
+      }
+
+      const safeResults = data.results.filter(r => safeHttpUrl(r.url));
       div.innerHTML = `
-        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">${data.results.length} result(s) from ${data.sources?.join(', ') || 'all sources'}</p>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">${data.results.length} result(s) · ${data.searchDepth === 'deep' ? 'Deep search' : 'Quick search'} · ${data.sources?.join(', ') || 'all sources'}</p>
         <table>
           <thead>
             <tr>
               <th style="width:30px">+</th>
               <th>Title</th>
               <th>Company</th>
-              <th>Location</th>
+              <th>Work location</th>
+              <th>Work mode</th>
               <th>Source</th>
             </tr>
           </thead>
           <tbody>
-            ${data.results.map((r, i) => `
+            ${safeResults.map((r, i) => `
               <tr>
-                <td><button class="btn-small" onclick="addOne('${r.url.replace(/'/g, "\\'")}', this)" title="Add to pipeline">+</button></td>
-                <td style="max-width:250px"><a href="${r.url}" target="_blank" style="color:var(--accent)">${esc(r.title)}</a></td>
-                <td>${esc(r.company)}</td>
-                <td>${esc(r.location)}</td>
-                <td>${r.source}</td>
+                <td><button class="btn-small add-discovered-job" data-result-index="${i}" title="Add to pipeline">+</button></td>
+                <td data-i18n-skip style="max-width:250px"><a href="${esc(safeHttpUrl(r.url))}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(r.title)}</a></td>
+                <td data-i18n-skip>${esc(r.company)}</td>
+                <td data-i18n-skip>${esc(r.location)}</td>
+                <td data-i18n-skip>${esc(r.workMode || 'unknown')}</td>
+                <td data-i18n-skip>${esc(r.source)}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
+        ${diagnostics}
       `;
+      for (const button of div.querySelectorAll('.add-discovered-job')) {
+        const result = safeResults[Number(button.dataset.resultIndex)];
+        if (result) button.addEventListener('click', () => addOne(result.url, button));
+      }
     } catch (err) {
-      alert(`Discover failed: ${err.message}`);
+      alert(discoverErrorMessage('DISCOVER_NETWORK_ERROR', err.message));
     } finally {
       btn.disabled = false;
       btn.textContent = 'Search';
     }
+  }
+
+  function renderDiagnostics(diagnostics) {
+    if (!diagnostics.length) return '';
+    const color = status => status === 'ok'
+      ? 'var(--green)'
+      : status === 'empty' || status === 'skipped'
+        ? 'var(--yellow)'
+        : 'var(--red)';
+    return `<div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
+      <strong>Source status</strong>
+      ${diagnostics.map(d => `<div style="margin-top:4px;color:${color(d.status)}">${esc(d.source)}: ${esc(d.message)}</div>`).join('')}
+    </div>`;
   }
 
   async function addOne(url, btn) {
@@ -270,7 +374,35 @@
 
   function esc(s) {
     if (!s) return '-';
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function safeHttpUrl(value) {
+    try {
+      const url = new URL(String(value));
+      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password
+        ? url.href
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function discoverErrorMessage(code, detail) {
+    const zh = window.jobbotI18n?.locale === 'zh-CN';
+    const messages = {
+      DISCOVER_QUERY_REQUIRED: ['Enter a search query.', '请输入搜索关键词。'],
+      DISCOVER_ENGLISH_REQUIRED: ['Use English for job keywords and locations.', '职位关键词和地点必须使用英文。'],
+      DISCOVER_WORK_MODE_INVALID: ['Invalid work mode.', '工作方式无效。'],
+      DISCOVER_DEPTH_INVALID: ['Invalid search depth.', '搜索深度无效。'],
+      DISCOVER_LOCATION_REQUIRED: ['Deep search requires a work location when The Muse is enabled.', '使用 The Muse 深度搜索时必须填写工作地点。'],
+      DISCOVER_SOURCE_INVALID: ['Unknown discovery source.', '未知的职位来源。'],
+      DISCOVER_NETWORK_ERROR: ['Discovery network request failed.', '职位搜索网络请求失败。'],
+      DISCOVER_FAILED: ['Job discovery failed.', '职位搜索失败。'],
+    };
+    const pair = messages[code] || messages.DISCOVER_FAILED;
+    const message = zh ? pair[1] : pair[0];
+    return detail && code === 'DISCOVER_FAILED' ? `${message} ${detail}` : message;
   }
 </script>
 

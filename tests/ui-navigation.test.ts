@@ -41,6 +41,7 @@ describe('UI navigation', () => {
   it.each([
     ['dashboard.ejs', 'dashboard'],
     ['job-detail.ejs', 'dashboard'],
+    ['add-urls.ejs', 'add-urls'],
     ['pipeline.ejs', 'pipeline'],
     ['events.ejs', 'events'],
     ['profile.ejs', 'profile'],

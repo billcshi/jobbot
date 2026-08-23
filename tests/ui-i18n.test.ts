@@ -28,6 +28,46 @@ describe('UI localization', () => {
     expect(readView('job-detail.ejs')).toContain('localizeTitle: false');
     expect(readView('job-detail.ejs')).toContain('data-i18n-skip><%= job.discovered_at %>');
     expect(readView('events.ejs')).toContain('<option data-i18n-skip value="<%= e.job_id %>"');
+    expect(readView('add-urls.ejs')).toContain('<td data-i18n-skip>${esc(r.workMode');
+  });
+
+  it('offers working public discovery sources and localized diagnostics', () => {
+    const addUrls = readView('add-urls.ejs');
+    const i18n = readView('_i18n.ejs');
+    expect(addUrls).toContain('<option value="jobicy">Jobicy</option>');
+    expect(addUrls).toContain('<option value="remotive">Remotive</option>');
+    expect(addUrls).toContain('<option value="themuse">The Muse (international)</option>');
+    expect(addUrls).toContain('id="discover-work-mode"');
+    expect(addUrls).toContain('id="discover-depth"');
+    expect(addUrls).toContain('<option value="quick">Quick search</option>');
+    expect(addUrls).toContain('<option value="deep">Deep search</option>');
+    expect(addUrls).toContain('within a fixed request and time budget');
+    expect(addUrls).toContain('<option value="">All available sources</option>');
+    expect(addUrls).toContain("params.set('searchDepth', searchDepth)");
+    expect(addUrls).toContain('e.g. Seattle');
+    expect(addUrls).toContain('Use English only for job keywords and city names');
+    expect(addUrls).not.toContain('e.g. Seattle or 西雅图');
+    expect(addUrls).not.toContain('Chinese and English city names are supported.');
+    expect(addUrls).not.toContain('<option value="linkedin">');
+    expect(addUrls).not.toContain('discover-market');
+    expect(addUrls).toContain('renderDiagnostics');
+    expect(addUrls).not.toContain("onclick=\"addOne(decodeURIComponent");
+    expect(addUrls).toContain("button.addEventListener('click'");
+    expect(addUrls).toContain('safeHttpUrl(r.url)');
+    expect(addUrls).toContain('DISCOVER_QUERY_REQUIRED');
+    expect(addUrls).toContain('未知的职位来源。');
+    expect(addUrls).not.toContain('renderManualSearches');
+    expect(addUrls).not.toContain('renderChinaNotice');
+    expect(i18n).toContain("'Source status': '来源状态'");
+    expect(i18n).toContain("'Work location': '工作地点'");
+    expect(i18n).toContain("'On-site / hybrid': '线下／混合办公'");
+    expect(i18n).toContain("'Quick search': '简易搜索'");
+    expect(i18n).toContain("'Deep search': '深度搜索'");
+    expect(i18n).toContain("'All available sources': '全部可用来源'");
+    expect(i18n).toContain("'Use English only for job keywords and city names (for example: backend engineer, Seattle). Do not enter Chinese.': '请不要输入中文；职位关键词和城市名称均请使用英文（例如 backend engineer、Seattle）。'");
+    expect(i18n).toContain("'e.g. backend engineer': '例如：backend engineer（请使用英文）'");
+    expect(i18n).toContain("'Enter the city name in English.': '请使用英文城市名。'");
+    expect(i18n).toContain("'No matching jobs found.': '来源可用，但没有找到匹配的职位。'");
   });
 
   it('switches both ways and remembers the selected locale', () => {
