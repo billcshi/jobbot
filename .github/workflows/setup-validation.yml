@@ -1,0 +1,58 @@
+name: Setup validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  linux-setup-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.15.1 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Parse Bash setup
+        run: bash -n scripts/setup.sh
+      - name: ShellCheck setup
+        run: shellcheck scripts/setup.sh
+      - name: Execute controlled Linux setup flow
+        run: pnpm vitest run tests/setup.test.ts
+
+  windows-setup-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enable pinned pnpm
+        shell: powershell
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.15.1 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Parse PowerShell setup
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/setup.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - name: Execute controlled Windows setup flow
+        run: pnpm vitest run tests/setup.test.ts
