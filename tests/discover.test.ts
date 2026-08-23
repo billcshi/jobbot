@@ -16,6 +16,7 @@ function jsonResponse(value: unknown): Response {
 
 afterEach(() => {
   resetDiscoveryCacheForTests();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -524,11 +525,39 @@ describe('job discovery', () => {
     }));
   });
 
+  it('returns existing results with a partial diagnostic when the time budget expires', async () => {
+    let clockReads = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      clockReads += 1;
+      return clockReads >= 5 ? 30_001 : 0;
+    });
+    const fetchMock = vi.fn(async () => jsonResponse({
+      page_count: 100,
+      results: [],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await discoverJobsDetailed({
+      query: 'backend', location: 'Seattle, WA', sources: ['themuse'],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.diagnostics[0]).toEqual(expect.objectContaining({
+      source: 'themuse',
+      status: 'empty',
+      partial: true,
+      message: expect.stringContaining('time budget was exhausted'),
+    }));
+  });
+
   it('bounds and evicts the public response cache', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [] })));
+    const fetchMock = vi.fn(async () => jsonResponse({ jobs: [] }));
+    vi.stubGlobal('fetch', fetchMock);
     for (let index = 0; index < 140; index++) {
       await discoverJobsDetailed({ query: `unique-${index}`, sources: ['jobicy'] });
     }
     expect(getDiscoveryCacheSizeForTests()).toBeLessThanOrEqual(128);
+    await discoverJobsDetailed({ query: 'unique-0', sources: ['jobicy'] });
+    expect(fetchMock).toHaveBeenCalledTimes(141);
   });
 });
