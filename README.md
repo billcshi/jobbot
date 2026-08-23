@@ -2,7 +2,7 @@
 
 **Web-UI personal job-search assistant.** AI-native, quality over quantity.
 
-JobBot is a local web application (Express + EJS) that helps you discover and evaluate listings, then generate tailored LaTeX resumes and cover letters. Designed to be used with Claude Code: talk to the AI, and it populates your profile, scores jobs, and tailors application materials. Applications themselves remain entirely manual.
+JobBot is a local web application (Express + EJS) that helps you discover and evaluate listings, then generate tailored LaTeX resumes and cover letters. It is designed to work with AI coding agents such as Claude Code, Codex, Cursor, and Copilot: talk to your agent, and it populates your profile, scores jobs, and tailors application materials. Applications themselves remain entirely manual.
 
 **Start the web UI:**
 
@@ -15,29 +15,57 @@ The web UI provides dashboard analytics, pipeline management, batch URL adding, 
 
 ## Quick Setup
 
+The setup requires Node.js 20 or newer, an internet connection, and permission to install system packages. Linux automatic system-package installation supports Debian/Ubuntu; Windows uses WinGet.
+
 ```bash
 git clone <this-repo> jobbot
 cd jobbot
 bash scripts/setup.sh
 ```
 
-That's it. The script installs LaTeX, pnpm dependencies, and initializes everything.
+On Windows PowerShell, use:
 
-Then open Claude Code and say "let's fill in my profile":
+```powershell
+git clone <this-repo> jobbot
+cd jobbot
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+That's it. The script installs LaTeX, Poppler, Python PDF libraries, and pnpm dependencies; initializes the database; then runs type-checking and the automated test suite. It also compiles a disposable document using JobBot's real resume-template packages, so a successful setup means PDF generation is actually usable. On Windows, the script repairs the current PowerShell session's MiKTeX/Poppler paths and preinstalls the required MiKTeX packages.
+
+Then open the repository in your preferred AI coding agent and say "let's fill in my profile." For Claude Code, if installed:
 
 ```bash
 claude
 ```
 
+If you are already working with Codex or another compatible agent in this repository, no additional command is required.
+
 ## Dependencies
 
 ### One-command install
+
+Debian/Ubuntu Linux:
 
 ```bash
 bash scripts/setup.sh
 ```
 
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+To install only the web UI dependencies and skip LaTeX/Poppler/Python:
+
+```powershell
+.\scripts\setup.ps1 -SkipSystemDependencies
+```
+
 ### Manual install
+
+Windows users should normally run `scripts/setup.ps1`. For a manual Windows installation, install `MiKTeX.MiKTeX` and `oschwartz10612.Poppler` with WinGet, then install the Python libraries listed below. The setup script additionally provisions the MiKTeX packages used by `resumes/master.tex`: `titlesec`, `marvosym`, `enumitem`, `hyperref`, `fancyhdr`, `tabularx`, `lato`, and `fontawesome5`.
 
 ```bash
 # System: LaTeX (for resume/cover-letter PDFs)
@@ -49,8 +77,12 @@ sudo apt update && sudo apt install -y \
   texlive-fonts-extra
 
 # System: poppler-utils (for PDF-to-image conversion in visual audit)
-sudo apt install -y poppler-utils python3-pip
-pip3 install PyMuPDF --quiet --break-system-packages
+sudo apt install -y poppler-utils python3-venv
+
+# Hash-locked PDF helpers in a project-managed environment
+python3 -m venv local/python-venv
+local/python-venv/bin/python -m pip install \
+  --only-binary=:all: --require-hashes -r requirements-pdf.lock
 
 # Node.js
 pnpm install
@@ -69,7 +101,16 @@ pnpm jobbot init-db
 | `texlive-fonts-recommended` | Core fonts, Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5** (icons), **lato** (body font) |
 | `poppler-utils` | **pdftoppm** — PDF → PNG for visual audit |
-| `python3-pip` + `PyMuPDF` | Python PDF-to-image fallback |
+| `python3-venv` + `requirements-pdf.lock` | Isolated, version- and hash-locked PDF generation, extraction, inspection, and fallback rendering |
+
+### API keys and PDF audit providers
+
+Store API keys only in `local/config.yaml`; `local/` is gitignored. Never put a real key in `local.example/`, a README, source code, or a command that you intend to share.
+
+- DeepSeek is used for job extraction, scoring, resume tailoring, content audit, and AI-assisted profile editing. Configure `api_keys.deepseek` for the complete pipeline.
+- Anthropic and OpenAI are optional visual-audit providers. If neither is configured, JobBot fails closed unless a human or AI agent explicitly inspects the rendered PDF and records `local/resumes/<job-id>/visual-review.json`.
+- A local visual review is bound to the exact job ID, resume-version ID, and PDF SHA-256. Regenerating or changing the PDF invalidates the old review.
+- Candidate/profile facts and job descriptions are sent to DeepSeek for those AI stages. Rendered resume page images are sent to the configured Anthropic or OpenAI visual provider. Prompt/debug logs remain plaintext under the gitignored `local/` directory.
 
 ## Important: Personal Data vs. Project Code
 
@@ -87,7 +128,7 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`. Fill i
 
 ## Philosophy
 
-- **AI-native.** You don't edit anything by hand. Describe your background, preferences, and deal-breakers to Claude Code — it fills in your profile via the DB.
+- **AI-native.** You don't edit anything by hand. Describe your background, preferences, and deal-breakers to your AI coding agent — it fills in your profile via the DB.
 - **Quality, not quantity.** This is not a mass-apply bot. The goal is to surface the best matches and give each one genuine attention.
 - **Manual applications.** JobBot prepares materials and tracks outcomes, but never fills or submits application forms.
 - **Never invent data.** Resume tailoring may reorder, select, or lightly rephrase *real* experience — but it will never fabricate employers, dates, skills, or claims.
@@ -95,20 +136,21 @@ On first run, `pnpm jobbot init-db` copies `local.example/` → `local/`. Fill i
 
 ## Creating Your Profile (AI-Native)
 
-You do **not** manually edit anything. Instead, open Claude Code in this directory and talk to it. Claude will interview you and write your profile to the database for you.
+You do **not** manually edit anything. Instead, open this directory in a compatible AI coding agent and talk to it. The agent will interview you and write your profile to the database for you.
 
-### Step 1: Open Claude Code
+### Step 1: Open an AI coding agent
 
 ```bash
 cd jobbot
+# Claude Code, if installed:
 claude
 ```
 
-Claude reads `CLAUDE.md` on startup and knows it should interview you.
+Claude Code reads `CLAUDE.md`; Codex and other compatible agents read `AGENTS.md`. If you are already chatting with an agent in this repository, skip the `claude` command and continue in that conversation.
 
-### Step 2: Talk to Claude
+### Step 2: Talk to your AI agent
 
-Tell Claude about yourself. It will ask questions and create immutable profile revisions in SQLite, viewable at `/profile` in the web UI:
+Tell the agent about yourself. It will ask questions and create immutable profile revisions in SQLite, viewable at `/profile` in the web UI:
 
 **Candidate Profile** — Your real background:
 - Work history (company, title, dates, highlights, technologies)
@@ -143,10 +185,11 @@ The web UI provides: dashboard with analytics charts, pipeline management, batch
 
 | Command | Description |
 |---|---|
-| `bash scripts/setup.sh` | One-command full setup (LaTeX + poppler + pnpm + init) |
+| `bash scripts/setup.sh` | Linux one-command full setup (LaTeX + poppler + pnpm + init) |
+| `powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1` | Windows one-command full setup (MiKTeX + Poppler + pnpm + init) |
 | `pnpm jobbot init-db` | Create `local/` (from template) + initialize SQLite schema |
 | `pnpm jobbot add-url <url> [url2 ...]` | Add one or more job posting URLs (detects ATS type) |
-| `pnpm jobbot discover --query <terms> [--location <city>] [--source <board>] [--ingest]` | Search job boards for new postings |
+| `pnpm jobbot discover --query <English terms> [--location <English city>] [--source <board>] [--company <ATS slug>] [--work-mode any\|remote\|onsite] [--depth quick\|deep] [--ingest]` | Search job boards for new postings; Chinese discovery input is rejected consistently by CLI and UI |
 | `pnpm jobbot extract [--job <id>]` | Fetch + LLM-extract job details |
 | `pnpm jobbot score` | Score all jobs via LLM against preferences |
 | `pnpm jobbot list [--tier <tier>]` | List all jobs in a table |
@@ -160,7 +203,7 @@ The web UI provides: dashboard with analytics charts, pipeline management, batch
 | `pnpm jobbot render --job <id>` | LaTeX → PDF rendering (internal) |
 | `pnpm jobbot compose --job <id>` | Tailor + render in one step |
 | `pnpm jobbot cover-letter --job <id>` | Generate a versioned, evidence/provenance-validated cover letter |
-| `pnpm jobbot audit --job <id>` | Content (DeepSeek committee) + visual (GPT-5.5/Claude) audit |
+| `pnpm jobbot audit --job <id>` | DeepSeek content audit + visual provider or hash-bound local visual review |
 | `pnpm jobbot schedule --once` | Run pipeline once |
 | `pnpm jobbot schedule --interval <minutes>` | Run pipeline on a recurring interval |
 | `pnpm test` | Run the test suite |
@@ -223,4 +266,4 @@ jobbot/
 
 TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · OpenAI/Claude vision · poppler-utils · PyMuPDF · Vitest
 
-Designed for use with **Claude Code** and other AI coding agents on **WSL2**.
+Designed for use with **Claude Code, Codex, and other AI coding agents** on Windows PowerShell or WSL2/Linux.

@@ -2,7 +2,7 @@
 
 **Web-UI 个人求职助手。** AI 原生，质量优先，而非数量。
 
-JobBot 是一个本地 Web 应用（Express + EJS），帮助你发现和评估职位，并生成定制的 LaTeX 简历与求职信。专为 Claude Code 而设计：与 AI 对话，它会帮你填写个人资料、给职位打分并定制申请材料。实际投递完全由用户手动完成。
+JobBot 是一个本地 Web 应用（Express + EJS），帮助你发现和评估职位，并生成定制的 LaTeX 简历与求职信。它支持 Claude Code、Codex、Cursor、Copilot 等 AI 编码助手：与 AI 对话，它会帮你填写个人资料、给职位打分并定制申请材料。实际投递完全由用户手动完成。
 
 **启动 Web UI：**
 
@@ -15,29 +15,57 @@ Web UI 提供仪表板分析图表、流水线管理、批量添加链接、职�
 
 ## 快速开始
 
+安装前需要 Node.js 20 或更高版本、可用网络，以及安装系统软件的权限。Linux 自动安装目前支持 Debian/Ubuntu；Windows 使用 WinGet。
+
 ```bash
 git clone <this-repo> jobbot
 cd jobbot
 bash scripts/setup.sh
 ```
 
-一行命令完成所有安装（LaTeX + pnpm 依赖 + 初始化）。
+Windows PowerShell 请使用：
 
-然后打开 Claude Code 开始填写个人资料：
+```powershell
+git clone <this-repo> jobbot
+cd jobbot
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+一行命令安装 LaTeX、Poppler、Python PDF 库和 pnpm 依赖，初始化数据库，并运行类型检查与自动化测试。脚本还会使用 JobBot 简历模板的真实宏包编译一次临时 PDF，因此安装成功就代表 PDF 生成功能确实可用。Windows 脚本会自动修复当前 PowerShell 会话中的 MiKTeX/Poppler 路径，并预装模板需要的 MiKTeX 宏包。
+
+然后在你常用的 AI 编码助手中打开项目，并告诉它“开始填写我的个人资料”。如果已经安装 Claude Code，可以运行：
 
 ```bash
 claude
 ```
 
+如果你已经在当前项目中使用 Codex 或其他兼容的 AI 助手，无需再运行任何命令，直接继续对话即可。
+
 ## 依赖
 
 ### 一键安装
+
+Debian/Ubuntu Linux：
 
 ```bash
 bash scripts/setup.sh
 ```
 
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+
+如果暂时只使用 Web UI、不安装 LaTeX、Poppler 和 Python：
+
+```powershell
+.\scripts\setup.ps1 -SkipSystemDependencies
+```
+
 ### 手动安装
+
+Windows 用户通常应直接运行 `scripts/setup.ps1`。如果手动安装 Windows 依赖，请通过 WinGet 安装 `MiKTeX.MiKTeX` 和 `oschwartz10612.Poppler`，再安装下方列出的 Python 库。安装脚本还会准备 `resumes/master.tex` 使用的 MiKTeX 宏包：`titlesec`、`marvosym`、`enumitem`、`hyperref`、`fancyhdr`、`tabularx`、`lato` 和 `fontawesome5`。
 
 ```bash
 # 系统依赖：LaTeX（用于简历/求职信 PDF 生成）
@@ -50,7 +78,7 @@ sudo apt update && sudo apt install -y \
 
 # 系统依赖：poppler-utils（用于 PDF 转图片，视觉审核）
 sudo apt install -y poppler-utils python3-pip
-pip3 install PyMuPDF --quiet --break-system-packages
+pip3 install PyMuPDF reportlab pdfplumber pypdf --quiet --break-system-packages
 
 # Node.js 依赖
 pnpm install
@@ -69,7 +97,15 @@ pnpm jobbot init-db
 | `texlive-fonts-recommended` | 核心字体、Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5**（图标）、**lato**（正文字体） |
 | `poppler-utils` | **pdftoppm** — PDF → PNG 用于视觉审核 |
-| `python3-pip` + `PyMuPDF` | Python PDF 转图片备选方案 |
+| `python3-pip` + `PyMuPDF`、`reportlab`、`pdfplumber`、`pypdf` | PDF 生成、文本提取、检查和备选渲染 |
+
+### API 密钥与 PDF 审核方式
+
+API 密钥只能保存在 `local/config.yaml` 中；`local/` 已被 gitignore。不要把真实密钥写入 `local.example/`、README、源代码或准备分享的命令中。
+
+- DeepSeek 用于职位提取、评分、简历定制、内容审核和 AI 辅助资料编辑。要运行完整流水线，需要配置 `api_keys.deepseek`。
+- Anthropic 和 OpenAI 是可选的视觉审核提供方。如果二者都没有配置，JobBot 会默认拒绝通过，除非人工或 AI Agent 明确检查渲染后的 PDF，并记录到 `local/resumes/<job-id>/visual-review.json`。
+- 本地视觉审核会绑定准确的职位 ID、简历版本 ID 和 PDF SHA-256；重新生成或修改 PDF 后，旧审核自动失效。
 
 ## 重要：个人数据与项目代码分离
 
@@ -97,18 +133,19 @@ local.example/      ← 公开模板（已提交——展示目录结构）
 
 你**不需要**手动编辑 YAML 文件。相反，在项目目录中打开 AI 编码助手，与它对话即可。它会通过询问来了解你，并创建版本化 profile。
 
-### 第 1 步：打开 Claude Code
+### 第 1 步：打开 AI 编码助手
 
 ```bash
 cd jobbot
+# 如果已安装 Claude Code：
 claude
 ```
 
-Claude 启动时会读取 `CLAUDE.md`，并知道应该与你进行入职面谈。
+Claude Code 会读取 `CLAUDE.md`；Codex 及其他兼容的 AI 助手会读取 `AGENTS.md`。如果你已经在当前项目中与 AI 助手对话，可以跳过 `claude` 命令。
 
-### 第 2 步：与 Claude 对话
+### 第 2 步：与 AI 助手对话
 
-告诉 Claude 关于你自己的情况。它会提出问题并填写文件：
+告诉 AI 助手关于你自己的情况。它会提出问题，并在本地数据库中创建不可变的个人资料版本：
 
 **Candidate profile** — 本地数据库中的真实背景：
 - 工作经历（公司、职位、时间、亮点、使用过的技术）
@@ -127,7 +164,7 @@ Claude 启动时会读取 `CLAUDE.md`，并知道应该与你进行入职面谈�
 
 运行 `pnpm jobbot ui`，在 Profile 页面检查 candidate 和 preferences。
 
-Claude 所写的所有内容都基于你提供的信息。不会编造任何东西。你可以随时查看和调整。
+AI 助手写入的所有内容都必须基于你提供的信息，不会编造任何东西。你可以随时查看和调整。
 
 ## 命令
 
@@ -143,7 +180,8 @@ Web UI 提供：带分析图表的仪表板、流水线管理、批量添加链�
 
 | 命令 | 说明 |
 |---|---|
-| `bash scripts/setup.sh` | 一键完整安装（LaTeX + poppler + pnpm + 初始化） |
+| `bash scripts/setup.sh` | Linux 一键完整安装（LaTeX + poppler + pnpm + 初始化） |
+| `powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1` | Windows 一键完整安装（MiKTeX + Poppler + pnpm + 初始化） |
 | `pnpm jobbot init-db` | 创建 `local/`（从模板）+ 初始化 SQLite 数据库结构 |
 | `pnpm jobbot add-url <url> [url2 ...]` | 添加一个或多个职位链接（自动检测 ATS 类型） |
 | `pnpm jobbot discover --query <关键词> [--location <城市>] [--source <平台>] [--ingest]` | 搜索招聘网站上的新职位 |
@@ -160,7 +198,7 @@ Web UI 提供：带分析图表的仪表板、流水线管理、批量添加链�
 | `pnpm jobbot render --job <id>` | LaTeX → PDF 渲染（内部） |
 | `pnpm jobbot compose --job <id>` | 定制 + 渲染一步完成 |
 | `pnpm jobbot cover-letter --job <id>` | 通过 LLM 生成求职信 |
-| `pnpm jobbot audit --job <id>` | 内容 + 视觉审核已渲染 PDF |
+| `pnpm jobbot audit --job <id>` | DeepSeek 内容审核 + 视觉模型或与哈希绑定的本地视觉审核 |
 | `pnpm jobbot schedule --once` | 运行一次流水线 |
 | `pnpm jobbot schedule --interval <分钟>` | 按间隔定时运行流水线 |
 | `pnpm test` | 运行测试套件 |
@@ -207,4 +245,4 @@ jobbot/
 
 TypeScript · pnpm · SQLite (better-sqlite3) · Express · EJS · YAML 配置 · LaTeX · DeepSeek API · Vitest
 
-专为 **Claude Code** 及其他 AI 编程助手设计，运行于 **WSL2**。
+支持 **Claude Code、Codex 及其他 AI 编码助手**，可运行于 Windows PowerShell 或 WSL2/Linux。
