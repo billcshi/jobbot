@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   buildProfileEditPrompt,
   isTrustedMutationRequest,
@@ -41,6 +43,18 @@ describe('web mutation security', () => {
     expect(parseHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
     expect(parseHttpUrl('/relative/job')).toBeNull();
     expect(parseHttpUrl('https://user:password@example.com/job')).toBeNull();
+  });
+
+  it('never interpolates an adversarial HTTP URL into an inline event handler', () => {
+    const adversarialUrl = "https://jobs.example.com/x').constructor.constructor('alert(1)')()('";
+    expect(isHttpUrl(adversarialUrl)).toBe(true);
+
+    const addUrlsView = readFileSync(
+      path.join(process.cwd(), 'src', 'ui', 'views', 'add-urls.ejs'),
+      'utf8',
+    );
+    expect(addUrlsView).not.toContain('onclick="addOne(');
+    expect(addUrlsView).toContain("button.addEventListener('click'");
   });
 
   it('allows review-first AI editing for both profile sections', () => {
