@@ -7,6 +7,7 @@
  * Log files live in local/logs/ (gitignored — never committed).
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { AI_REQUEST_TIMEOUT_MS } from './http-json.js';
 import { LOCAL_DIR } from './paths.js';
 
 const LOGS_DIR = `${LOCAL_DIR}/logs`;
@@ -37,6 +38,7 @@ export interface AiLogEntry {
   totalTokens?: number;
   cachedTokens?: number;      // prompt_cache_hit_tokens (DeepSeek cache)
   durationMs: number;
+  timeoutMs?: number;
   success: boolean;
   error?: string;
 }
@@ -47,6 +49,7 @@ export interface AiLogEntry {
 export function logAiCall(entry: Omit<AiLogEntry, 'timestamp'>): void {
   const record: AiLogEntry = {
     ...entry,
+    timeoutMs: entry.timeoutMs ?? AI_REQUEST_TIMEOUT_MS,
     timestamp: new Date().toISOString(),
   };
   const path = todayFile();

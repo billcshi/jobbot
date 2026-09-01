@@ -23,6 +23,7 @@ import { readCandidate, readPreferences, writeProfile } from '../utils/profile-s
 import { parseYaml } from '../utils/yaml.js';
 import { getDeepseekKey, getDeepseekModel, getStageConcurrency } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
+import { requestAiJson } from '../utils/http-json.js';
 import { logger } from '../utils/logger.js';
 import { getPipelineManager } from '../jobs/pipeline-state.js';
 import { appContextForUser } from '../utils/app-context.js';
@@ -1073,37 +1074,18 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   const startMs = Date.now();
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
-      logAiCall({
-        operation: 'profile-edit',
-        model: getDeepseekModel(),
-        provider: 'deepseek',
-        endpoint: 'https://api.deepseek.com/v1/chat/completions',
-        requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
-        responseSummary: errMsg,
-        durationMs: Date.now() - startMs,
-        success: false,
-        error: errMsg,
-      });
-      res.status(500).json({ error: errMsg });
-      return;
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { label: 'DeepSeek profile edit' });
+    const data = request.data;
     const content = data.choices[0]?.message?.content || '';
     const cleaned = content.replace(/^```ya?ml\s*\n?/, '').replace(/\n?```\s*$/, '');
     const parsed = parseYaml<unknown>(cleaned);
@@ -1120,7 +1102,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
       requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
       responseSummary: `Output: ${cleaned.length} chars (was ${currentYaml.length} chars)`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -1670,7 +1652,7 @@ app.get('/api/market-data', async (_req, res) => {
 // ----- routes: discover API ------------------------------------------------
 
 app.get('/api/discover', async (req, res) => {
-  const query = typeof req.query.query === 'string' ? req.query.query : '';
+  const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
   const location = typeof req.query.location === 'string' ? req.query.location : undefined;
   const source = typeof req.query.source === 'string' ? req.query.source : undefined;
   const company = typeof req.query.company === 'string' ? req.query.company : undefined;

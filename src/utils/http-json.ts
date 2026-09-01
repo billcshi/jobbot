@@ -2,6 +2,7 @@ export interface JsonRequestOptions {
   signal?: AbortSignal;
   timeoutMs: number;
   label: string;
+  fetchImpl?: typeof fetch;
 }
 
 export interface JsonRequestResult<T> {
@@ -9,7 +10,9 @@ export interface JsonRequestResult<T> {
   durationMs: number;
 }
 
-function combinedSignal(callerSignal: AbortSignal | undefined, timeoutSignal: AbortSignal): AbortSignal {
+export const AI_REQUEST_TIMEOUT_MS = 90_000;
+
+export function combinedAbortSignal(callerSignal: AbortSignal | undefined, timeoutSignal: AbortSignal): AbortSignal {
   if (!callerSignal) return timeoutSignal;
   const abortSignalWithAny = AbortSignal as typeof AbortSignal & {
     any?: (signals: AbortSignal[]) => AbortSignal;
@@ -35,9 +38,9 @@ export async function requestJsonWithTimeout<T>(
   const startedAt = Date.now();
   const timeoutSignal = AbortSignal.timeout(options.timeoutMs);
   try {
-    const response = await fetch(url, {
+    const response = await (options.fetchImpl ?? fetch)(url, {
       ...init,
-      signal: combinedSignal(options.signal, timeoutSignal),
+      signal: combinedAbortSignal(options.signal, timeoutSignal),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -53,4 +56,17 @@ export async function requestJsonWithTimeout<T>(
     }
     throw error;
   }
+}
+
+
+/** One hard-deadline policy shared by every external AI provider call. */
+export async function requestAiJson<T>(
+  url: string,
+  init: RequestInit,
+  options: Omit<JsonRequestOptions, 'timeoutMs'>,
+): Promise<JsonRequestResult<T>> {
+  return await requestJsonWithTimeout<T>(url, init, {
+    ...options,
+    timeoutMs: AI_REQUEST_TIMEOUT_MS,
+  });
 }

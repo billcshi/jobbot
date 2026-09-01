@@ -7,6 +7,7 @@ import type {
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { extractUsage, logAiCall } from '../utils/ai-logger.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 export interface RequirementDraft {
   text: string;
@@ -265,26 +266,34 @@ export async function extractJobRequirements(
   };
   if (thinking) requestBody['thinking'] = thinking;
   const startMs = Date.now();
+  let extractionLogged = false;
 
   try {
-    const response = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
+    const extractionRequest = await requestAiJson<{
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
-      signal: options.signal,
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: Record<string, number>;
-    };
+    }, { signal: options.signal, label: 'DeepSeek requirement extraction', fetchImpl });
+    const data = extractionRequest.data;
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('Requirement extraction returned an empty response');
     const requirements = createJobRequirements(parseRequirementDrafts(parseLLMJson(content, 'requirements')));
     if (requirements.length === 0) throw new Error('Requirement extraction returned no usable requirements');
+    logAiCall({
+      operation: 'extract-requirements',
+      model,
+      provider: 'deepseek',
+      endpoint: 'https://api.deepseek.com/v1/chat/completions',
+      requestSummary: `Extract requirements from ${jobDescription.length} characters`,
+      responseSummary: `${requirements.length} frozen requirements`,
+      ...extractUsage(data as Record<string, unknown>),
+      durationMs: extractionRequest.durationMs,
+      success: true,
+    });
+    extractionLogged = true;
     const coverageRequestBody: Record<string, unknown> = {
       model,
       messages: [
@@ -294,26 +303,51 @@ export async function extractJobRequirements(
       max_tokens: 8192,
     };
     if (thinking) coverageRequestBody['thinking'] = thinking;
-    const coverageResponse = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(coverageRequestBody),
-      signal: options.signal,
-    });
-    if (!coverageResponse.ok) {
-      const body = await coverageResponse.text();
-      throw new Error(`Requirement coverage API error ${coverageResponse.status}: ${body.slice(0, 200)}`);
+    const coverageStartMs = Date.now();
+    let coverage: RequirementCoverageEntry[];
+    try {
+      const coverageRequest = await requestAiJson<{
+        choices?: Array<{ message?: { content?: string } }>;
+        usage?: Record<string, number>;
+      }>('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(coverageRequestBody),
+      }, { signal: options.signal, label: 'DeepSeek requirement coverage', fetchImpl });
+      const coverageData = coverageRequest.data;
+      const coverageContent = coverageData.choices?.[0]?.message?.content;
+      if (!coverageContent) throw new Error('Requirement coverage returned an empty response');
+      coverage = validateRequirementCoverage(
+        candidateSpans,
+        requirements,
+        parseLLMJson(coverageContent, 'requirement-coverage'),
+      );
+      logAiCall({
+        operation: 'verify-requirement-coverage',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Verify coverage for ${candidateSpans.length} requirement spans`,
+        responseSummary: `${coverage.length}/${candidateSpans.length} spans covered`,
+        ...extractUsage(coverageData as Record<string, unknown>),
+        durationMs: coverageRequest.durationMs,
+        success: true,
+      });
+    } catch (coverageError) {
+      const message = coverageError instanceof Error ? coverageError.message : String(coverageError);
+      logAiCall({
+        operation: 'verify-requirement-coverage',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Verify coverage for ${candidateSpans.length} requirement spans`,
+        responseSummary: message,
+        durationMs: Date.now() - coverageStartMs,
+        success: false,
+        error: message,
+      });
+      throw coverageError;
     }
-    const coverageData = await coverageResponse.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const coverageContent = coverageData.choices?.[0]?.message?.content;
-    if (!coverageContent) throw new Error('Requirement coverage returned an empty response');
-    const coverage = validateRequirementCoverage(
-      candidateSpans,
-      requirements,
-      parseLLMJson(coverageContent, 'requirement-coverage'),
-    );
     requirements.forEach((requirement) => {
       requirement.sourceSpans = coverage
         .filter((entry) => entry.requirement_ids.includes(requirement.id))
@@ -322,31 +356,22 @@ export async function extractJobRequirements(
         throw new Error(`Extracted requirement ${requirement.id} has no independently verified JD source span`);
       }
     });
-    logAiCall({
-      operation: 'extract-requirements',
-      model,
-      provider: 'deepseek',
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Extract requirements from ${jobDescription.length} characters`,
-      responseSummary: `${requirements.length} frozen requirements`,
-      ...extractUsage(data as Record<string, unknown>),
-      durationMs: Date.now() - startMs,
-      success: true,
-    });
     return requirements;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logAiCall({
-      operation: 'extract-requirements',
-      model,
-      provider: 'deepseek',
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Extract requirements from ${jobDescription.length} characters`,
-      responseSummary: message,
-      durationMs: Date.now() - startMs,
-      success: false,
-      error: message,
-    });
+    if (!extractionLogged) {
+      logAiCall({
+        operation: 'extract-requirements',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Extract requirements from ${jobDescription.length} characters`,
+        responseSummary: message,
+        durationMs: Date.now() - startMs,
+        success: false,
+        error: message,
+      });
+    }
     throw error;
   }
 }

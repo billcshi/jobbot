@@ -12,6 +12,7 @@ import { getActiveUserId } from '../utils/user-context.js';
 import { buildCandidateEvidence, evidencePromptContext } from '../domain/resume/evidence.js';
 import { parseProvenancedTailoredResumeData } from '../domain/resume/contract.js';
 import { ProfileRepository } from '../repositories/profile-repository.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 const AUDIT_ATS = readFileSync(`${PROJECT_ROOT}/prompts/audit-ats.md`, 'utf-8');
 const AUDIT_HM = readFileSync(`${PROJECT_ROOT}/prompts/audit-hm.md`, 'utf-8');
@@ -293,22 +294,15 @@ async function runSingleReviewer(
   const startMs = Date.now();
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: `DeepSeek ${name} audit` });
+    const data = request.data;
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response from DeepSeek');
 
@@ -325,7 +319,7 @@ async function runSingleReviewer(
       requestSummary: `${name}: ${resumeText.length} chars resume`,
       responseSummary: `Score ${score}/100, ${issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -460,6 +454,7 @@ async function auditVisualAnthropic(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<VisualAuditResult> {
+  const startMs = Date.now();
   try {
     const images = imagePaths.slice(0, 3).map(imageToBase64);
 
@@ -485,9 +480,10 @@ async function auditVisualAnthropic(
       messages: [{ role: 'user', content }],
     };
 
-    const startMs = Date.now();
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const request = await requestAiJson<{
+      content: [{ text: string }];
+      usage?: Record<string, number>;
+    }>('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -495,18 +491,8 @@ async function auditVisualAnthropic(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Anthropic API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      content: [{ text: string }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: 'Anthropic visual audit' });
+    const data = request.data;
     const jsonText = data.content[0]?.text || '{}';
     const parsed = parseAuditModelOutput(parseLLMJson(jsonText, 'audit-visual'));
     const usage = extractUsage(data as Record<string, unknown>);
@@ -521,7 +507,7 @@ async function auditVisualAnthropic(
       requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
       responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -536,7 +522,7 @@ async function auditVisualAnthropic(
       endpoint: 'https://api.anthropic.com/v1/messages',
       requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
       responseSummary: msg,
-      durationMs: 0,
+      durationMs: Date.now() - startMs,
       success: false,
       error: msg,
     });
@@ -551,6 +537,7 @@ async function auditVisualOpenAI(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<VisualAuditResult> {
+  const startMs = Date.now();
   try {
     const images = imagePaths.slice(0, 3).map(imageToBase64);
 
@@ -576,27 +563,18 @@ async function auditVisualOpenAI(
       messages: [{ role: 'user', content }],
     };
 
-    const startMs = Date.now();
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: 'OpenAI visual audit' });
+    const data = request.data;
     const jsonText = data.choices[0]?.message?.content || '{}';
     const parsed = parseAuditModelOutput(parseLLMJson(jsonText, 'audit-visual'));
     const usage = extractUsage(data as Record<string, unknown>);
@@ -611,7 +589,7 @@ async function auditVisualOpenAI(
       requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
       responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -626,7 +604,7 @@ async function auditVisualOpenAI(
       endpoint: 'https://api.openai.com/v1/chat/completions',
       requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
       responseSummary: msg,
-      durationMs: 0,
+      durationMs: Date.now() - startMs,
       success: false,
       error: msg,
     });

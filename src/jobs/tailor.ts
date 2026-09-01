@@ -24,10 +24,9 @@ import { JobKnowledgeRepository } from '../repositories/job-knowledge-repository
 import { ResumeRepository, type ResumeClaimInput } from '../repositories/resume-repository.js';
 import { toJsonObject, type JsonObject } from '../domain/shared/json.js';
 import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
-import { requestJsonWithTimeout } from '../utils/http-json.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 const BASE_TAILOR_PROMPT = readFileSync(`${PROMPTS_DIR}/tailor-resume.md`, 'utf-8');
-const DEEPSEEK_REQUEST_TIMEOUT_MS = 90_000;
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions';
 
 export type TailorParseAttempt<T> =
@@ -326,7 +325,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   }
 
   try {
-    const initialRequest = await requestJsonWithTimeout<{
+    const initialRequest = await requestAiJson<{
       choices: [{
         finish_reason?: string;
         message: { content?: string; reasoning_content?: string };
@@ -339,7 +338,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-    }, { signal, timeoutMs: DEEPSEEK_REQUEST_TIMEOUT_MS, label: 'DeepSeek customize' });
+    }, { signal, label: 'DeepSeek customize' });
     const data = initialRequest.data;
     const content = data.choices[0]?.message?.content;
     if (!content) {
@@ -379,7 +378,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
 
       const repairStartMs = Date.now();
       try {
-        const repairRequest = await requestJsonWithTimeout<{
+        const repairRequest = await requestAiJson<{
           choices: [{ message: { content?: string } }];
           usage?: Record<string, number>;
         }>(DEEPSEEK_ENDPOINT, {
@@ -422,7 +421,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
             max_tokens: 16384,
             thinking: getDeepseekThinking('customize'),
           }),
-        }, { signal, timeoutMs: DEEPSEEK_REQUEST_TIMEOUT_MS, label: 'DeepSeek contract repair' });
+        }, { signal, label: 'DeepSeek contract repair' });
         const repairData = repairRequest.data;
         const repairedContent = repairData.choices[0]?.message?.content;
         if (!repairedContent) throw new Error('Empty response from DeepSeek contract repair');
@@ -460,7 +459,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
       logger.warn(`Repairing semantically unsupported claims for job ${jobId}`);
       const semanticRepairStartMs = Date.now();
       try {
-      const semanticRepairRequest = await requestJsonWithTimeout<{
+      const semanticRepairRequest = await requestAiJson<{
         choices: [{ message: { content?: string } }];
         usage?: Record<string, number>;
       }>(DEEPSEEK_ENDPOINT, {
@@ -504,7 +503,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
           max_tokens: 16384,
           thinking: getDeepseekThinking('customize'),
         }),
-      }, { signal, timeoutMs: DEEPSEEK_REQUEST_TIMEOUT_MS, label: 'DeepSeek semantic repair' });
+      }, { signal, label: 'DeepSeek semantic repair' });
       const semanticRepairData = semanticRepairRequest.data;
       const semanticRepairContent = semanticRepairData.choices[0]?.message?.content;
       if (!semanticRepairContent) throw new Error('Empty response from DeepSeek semantic repair');

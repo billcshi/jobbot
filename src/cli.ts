@@ -320,7 +320,7 @@ async function main(): Promise<void> {
     }
 
     case 'discover': {
-      const query = flags['query'];
+      const query = flags['query']?.trim();
       const location = flags['location'];
       const source = flags['source'];
       const ingest = flags['ingest'] === 'true';

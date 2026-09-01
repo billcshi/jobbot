@@ -13,6 +13,7 @@ import { getActiveUserId } from '../utils/user-context.js';
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
+import { requestAiJson } from '../utils/http-json.js';
 import { logger } from '../utils/logger.js';
 
 const COVER_LETTER_PROMPT = readFileSync(`${PROJECT_ROOT}/prompts/cover-letter.md`, 'utf-8');
@@ -143,7 +144,10 @@ export async function generateCoverLetter(
   let letter;
   let semantic;
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -155,12 +159,8 @@ export async function generateCoverLetter(
         max_tokens: 16384,
         ...(getDeepseekThinking('cover-letter') ? { thinking: getDeepseekThinking('cover-letter') } : {}),
       }),
-    });
-    if (!response.ok) throw new Error(`DeepSeek API error ${response.status}: ${(await response.text()).slice(0, 200)}`);
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: Record<string, number>;
-    };
+    }, { label: 'DeepSeek cover letter' });
+    const data = request.data;
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('Empty response');
     letter = parseProvenancedCoverLetter(parseLLMJson(content, `cover-letter job #${jobId}`));
@@ -177,7 +177,7 @@ export async function generateCoverLetter(
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Cover letter for job #${jobId}, canonical resume #${context.resumeVersionId}`,
       responseSummary: `${letter.paragraphs.flatMap((paragraph) => paragraph.sentences).length} validated sentences`,
-      ...extractUsage(data as Record<string, unknown>), durationMs: Date.now() - startMs, success: true,
+      ...extractUsage(data as Record<string, unknown>), durationMs: request.durationMs, success: true,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

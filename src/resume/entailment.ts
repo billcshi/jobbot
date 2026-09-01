@@ -3,6 +3,7 @@ import type { ProvenancedTailoredResumeData } from '../domain/resume/types.js';
 import { extractUsage, logAiCall } from '../utils/ai-logger.js';
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 export type EntailmentVerdict = 'entailed' | 'unsupported' | 'uncertain';
 
@@ -139,20 +140,15 @@ export async function validateSemanticEntailment(
   const startMs = Date.now();
 
   try {
-    const response = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
-      signal: options.signal,
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: Record<string, number>;
-    };
+    }, { signal: options.signal, label: 'DeepSeek semantic entailment', fetchImpl });
+    const data = request.data;
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('Semantic entailment returned an empty response');
     const expectedClaims = reviewInputs.map((item) => item.claim);
@@ -172,7 +168,7 @@ export async function validateSemanticEntailment(
       requestSummary: `Validate ${reviewInputs.length} resume claims against linked sources`,
       responseSummary: `${assessments.filter((item) => item.verdict === 'entailed').length}/${assessments.length} entailed`,
       ...extractUsage(data as Record<string, unknown>),
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
     return result;

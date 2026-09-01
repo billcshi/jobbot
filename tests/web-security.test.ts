@@ -45,6 +45,14 @@ describe('web mutation security', () => {
     expect(parseHttpUrl('https://user:password@example.com/job')).toBeNull();
   });
 
+  it('trims discovery queries at both CLI and HTTP boundaries', () => {
+    const cli = readFileSync(path.join(process.cwd(), 'src', 'cli.ts'), 'utf8');
+    const server = readFileSync(path.join(process.cwd(), 'src', 'ui', 'server.ts'), 'utf8');
+    expect(cli).toContain("const query = flags['query']?.trim()");
+    expect(server).toContain('req.query.query.trim()');
+    expect(server).toContain("errorCode: 'DISCOVER_QUERY_REQUIRED'");
+  });
+
   it('never interpolates an adversarial HTTP URL into an inline event handler', () => {
     const adversarialUrl = "https://jobs.example.com/x').constructor.constructor('alert(1)')()('";
     expect(isHttpUrl(adversarialUrl)).toBe(true);

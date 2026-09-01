@@ -2,7 +2,7 @@ import { getDb } from '../db/client.js';
 import { detectAts } from './detect-ats.js';
 import { logger } from '../utils/logger.js';
 import { getActiveUserId } from '../utils/user-context.js';
-import { parseHttpUrl } from '../utils/url.js';
+import { rejectObviouslyUnsafeExternalUrl } from '../utils/safe-external-fetch.js';
 
 export interface AddUrlResult {
   id: number;
@@ -17,8 +17,10 @@ export interface AddUrlResult {
  */
 export function addUrl(url: string, userId = getActiveUserId()): AddUrlResult {
   const trimmedUrl = url.trim();
-  if (!parseHttpUrl(trimmedUrl)) {
-    throw new Error('Invalid job URL: only absolute http:// or https:// URLs are allowed.');
+  try {
+    rejectObviouslyUnsafeExternalUrl(trimmedUrl);
+  } catch {
+    throw new Error('Invalid job URL: only public absolute http:// or https:// URLs are allowed.');
   }
   url = trimmedUrl;
   const db = getDb();

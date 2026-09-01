@@ -4,6 +4,7 @@ import { writeLLMSalary, writeLLMSkills } from './market-data.js';
 import { logger } from '../utils/logger.js';
 import { getActiveUserId } from '../utils/user-context.js';
 import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
+import { fetchExternalText } from '../utils/safe-external-fetch.js';
 
 export interface ExtractResult {
   jobId: number;
@@ -35,9 +36,11 @@ export async function extractJob(jobId: number, signal?: AbortSignal, userId = g
 
   let html: string;
   try {
-    const res = await fetch(job.url, {
-      headers: { 'User-Agent': 'JobBot/0.2 (personal job-search assistant)' },
+    const res = await fetchExternalText(job.url, {
       signal,
+      timeoutMs: 20_000,
+      maxBytes: 5 * 1024 * 1024,
+      maxRedirects: 5,
     });
     if (!res.ok) {
       const errMsg = `HTTP ${res.status}`;
@@ -49,7 +52,7 @@ export async function extractJob(jobId: number, signal?: AbortSignal, userId = g
         success: false, error: errMsg,
       };
     }
-    html = await res.text();
+    html = res.text;
   } catch (err) {
     rethrowAbort(err, signal);
     const msg = err instanceof Error ? err.message : String(err);

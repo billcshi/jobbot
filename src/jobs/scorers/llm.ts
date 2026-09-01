@@ -5,6 +5,7 @@ import { getDeepseekKey, getDeepseekThinking } from '../../utils/config.js';
 import { parseLLMJson } from '../../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
+import { requestAiJson } from '../../utils/http-json.js';
 import { getActiveUserId } from '../../utils/user-context.js';
 import type { ScoreResult } from '../score.js';
 
@@ -130,40 +131,18 @@ export async function scoreJobWithLLM(
   const startMs = Date.now();
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string; reasoning_content?: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
-      logAiCall({
-        operation: 'score',
-        model: 'deepseek-v4-flash',  // flash: no reasoning, faster, ideal for scoring
-        provider: 'deepseek',
-        endpoint: 'https://api.deepseek.com/v1/chat/completions',
-        requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
-        responseSummary: errMsg,
-        durationMs: Date.now() - startMs,
-        success: false,
-        error: errMsg,
-      });
-      throw new Error(errMsg);
-    }
-
-    const responseText = await response.text();
-    let data: { choices: [{ message: { content: string; reasoning_content?: string } }]; usage?: Record<string, number> };
-    try {
-      data = JSON.parse(responseText);
-    } catch {
-      throw new Error(`DeepSeek returned non-JSON: ${responseText.slice(0, 300)}`);
-    }
+    }, { signal, label: 'DeepSeek job scoring' });
+    const data = request.data;
     const content = data.choices?.[0]?.message?.content;
     // v4-pro may return empty content with reasoning_content (max_tokens hit mid-reasoning)
     const reasoning = data.choices?.[0]?.message?.reasoning_content;
@@ -171,7 +150,7 @@ export async function scoreJobWithLLM(
       throw new Error(`DeepSeek reasoning exceeded token limit (reasoning: ${reasoning.slice(0, 200)}). Increase max_tokens.`);
     }
     if (!content) {
-      throw new Error(`Empty response from DeepSeek (raw: ${responseText.slice(0, 300)})`);
+      throw new Error('Empty response from DeepSeek');
     }
 
     const parsed = parseLLMJson(content, `score job #${job.id}`);
@@ -186,7 +165,7 @@ export async function scoreJobWithLLM(
       requestSummary: `Score job #${job.id} "${job.title}" at ${job.company}`,
       responseSummary: `${result.tier} (${result.score.toFixed(2)}) — ${result.reason.slice(0, 100)}`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
