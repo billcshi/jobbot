@@ -5,12 +5,12 @@
 Sets up JobBot on Windows.
 
 .DESCRIPTION
-Checks Node.js and pnpm, installs PDF tooling and Python PDF libraries, installs
+Checks Node.js and pnpm, installs PDF tooling, installs
 Node.js dependencies, initializes JobBot's local SQLite database, and runs
 post-install verification.
 
 .PARAMETER SkipSystemDependencies
-Skips MiKTeX, Poppler, Python, and Python PDF-library installation. Use this when you
+Skips MiKTeX and Poppler installation. Use this when you
 only need the web UI and do not need PDF rendering or visual audits yet.
 
 .EXAMPLE
@@ -202,33 +202,42 @@ function Test-LaTeXTemplateDependencies {
     }
 }
 
-function Enable-CompatiblePnpm {
-    if (-not (Test-CommandAvailable -Name 'corepack')) {
-        throw 'pnpm 10 or newer is required and Corepack is unavailable. Install pnpm from https://pnpm.io/installation and run this script again.'
+function Get-PnpmCommand {
+    if (Test-CommandAvailable -Name 'pnpm') {
+        $version = (& pnpm --version 2> $null)
+        if ($LASTEXITCODE -eq 0 -and $version.Trim() -eq $PinnedPnpmVersion) {
+            return @('pnpm')
+        }
     }
 
-    Write-Host "  Installing pinned pnpm $PinnedPnpmVersion with Corepack..."
-    Invoke-CheckedCommand -FilePath 'corepack' -Arguments @('prepare', "pnpm@$PinnedPnpmVersion", '--activate')
-    Invoke-CheckedCommand -FilePath 'corepack' -Arguments @('enable', 'pnpm')
-    Update-SessionPath
+    if (Test-CommandAvailable -Name 'corepack') {
+        $version = (& corepack pnpm --version 2> $null)
+        if ($LASTEXITCODE -eq 0 -and $version.Trim() -eq $PinnedPnpmVersion) {
+            return @('corepack', 'pnpm')
+        }
+    }
+
+    throw "pnpm $PinnedPnpmVersion is required. Install pnpm or use a Node.js distribution that includes Corepack."
 }
 
-function Get-PnpmVersion {
-    if (-not (Test-CommandAvailable -Name 'pnpm')) {
-        return $null
-    }
+function Invoke-Pnpm {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$PnpmCommand,
 
-    Push-Location ([IO.Path]::GetTempPath())
-    try {
-        $version = (& pnpm --version 2> $null)
-        if ($LASTEXITCODE -ne 0) {
-            return $null
-        }
-        return $version.Trim()
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $executable = $PnpmCommand[0]
+    $prefixArguments = if ($PnpmCommand.Count -gt 1) {
+        $PnpmCommand[1..($PnpmCommand.Count - 1)]
     }
-    finally {
-        Pop-Location
+    else {
+        @()
     }
+    $allArguments = @($prefixArguments) + @($Arguments)
+    Invoke-CheckedCommand -FilePath $executable -Arguments $allArguments
 }
 
 function Install-WinGetPackage {
@@ -252,100 +261,6 @@ function Install-WinGetPackage {
         '--disable-interactivity'
     )
     Update-SessionPath
-}
-
-function Find-PythonCommand {
-    if (Test-CommandAvailable -Name 'python') {
-        & python -c 'import sys; print(sys.executable)' *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return @('python')
-        }
-    }
-
-    if (Test-CommandAvailable -Name 'py') {
-        & py -3 -c 'import sys; print(sys.executable)' *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return @('py', '-3')
-        }
-    }
-
-    return @()
-}
-
-function Invoke-Python {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$PythonCommand,
-
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
-    )
-
-    $executable = $PythonCommand[0]
-    $prefixArguments = @()
-    if ($PythonCommand.Count -gt 1) {
-        $prefixArguments = $PythonCommand[1..($PythonCommand.Count - 1)]
-    }
-
-    Invoke-CheckedCommand -FilePath $executable -Arguments @($prefixArguments + $Arguments)
-}
-
-function Test-PythonPdfLibraries {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$PythonCommand
-    )
-
-    $executable = $PythonCommand[0]
-    $prefixArguments = @()
-    if ($PythonCommand.Count -gt 1) {
-        $prefixArguments = $PythonCommand[1..($PythonCommand.Count - 1)]
-    }
-
-    # Windows PowerShell 5.1 can promote a native program's stderr to a
-    # terminating NativeCommandError when $ErrorActionPreference is Stop.
-    # Missing imports are an expected probe result here, so decide by exit code.
-    $previousErrorActionPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        & $executable @prefixArguments -c 'import fitz, reportlab, pdfplumber, pypdf' *> $null
-        return $LASTEXITCODE -eq 0
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
-}
-
-function Install-PythonPdfLibraries {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$PythonCommand,
-
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot
-    )
-
-    $pythonVenv = Join-Path $RepositoryRoot 'local\python-venv'
-    $venvPython = Join-Path $pythonVenv 'Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        Write-Host '  Creating isolated Python environment in local/python-venv...'
-        Invoke-Python -PythonCommand $PythonCommand -Arguments @('-m', 'venv', $pythonVenv)
-    }
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        throw 'Python virtual environment creation completed without producing Scripts\python.exe.'
-    }
-
-    $venvCommand = @($venvPython)
-    Write-Host '  Installing hash-locked Python PDF libraries...'
-    Invoke-Python -PythonCommand $venvCommand -Arguments @(
-        '-m', 'pip', 'install', '--quiet', '--only-binary=:all:', '--require-hashes',
-        '-r', (Join-Path $RepositoryRoot 'requirements-pdf.lock')
-    )
-    if (-not (Test-PythonPdfLibraries -PythonCommand $venvCommand)) {
-        throw 'Python PDF libraries failed their import check inside local/python-venv.'
-    }
-
-    return $venvCommand
 }
 
 if ($LoadFunctionsOnly) {
@@ -373,23 +288,8 @@ try {
     }
     Write-Host "  Node.js $nodeVersion"
 
-    $pnpmVersion = Get-PnpmVersion
-    $pnpmMajor = $null
-    if ($null -ne $pnpmVersion -and $pnpmVersion -match '^(?<major>\d+)\.') {
-        $pnpmMajor = [int]$Matches['major']
-    }
-
-    if ($pnpmVersion -ne $PinnedPnpmVersion) {
-        Enable-CompatiblePnpm
-        $pnpmVersion = Get-PnpmVersion
-        if ($null -ne $pnpmVersion -and $pnpmVersion -match '^(?<major>\d+)\.') {
-            $pnpmMajor = [int]$Matches['major']
-        }
-    }
-    if ($pnpmVersion -ne $PinnedPnpmVersion) {
-        throw 'Corepack completed, but pnpm is still unavailable. Open a new PowerShell window and run this script again.'
-    }
-    Write-Host "  pnpm $pnpmVersion"
+    $pnpmCommand = @(Get-PnpmCommand)
+    Write-Host "  pnpm $PinnedPnpmVersion (via $($pnpmCommand -join ' '))"
 
     Write-Step '[2/5] Checking system dependencies...'
 
@@ -403,10 +303,7 @@ try {
             @('pdftoppm', 'pdfinfo', 'pdftotext') |
                 Where-Object { -not (Test-CommandAvailable -Name $_) }
         )
-        $pythonCommand = @(Find-PythonCommand)
-        $needsPython = $pythonCommand.Count -eq 0
-
-        if (($needsMiKTeX -or $needsPoppler.Count -gt 0 -or $needsPython) -and -not (Test-CommandAvailable -Name 'winget')) {
+        if (($needsMiKTeX -or $needsPoppler.Count -gt 0) -and -not (Test-CommandAvailable -Name 'winget')) {
             throw 'WinGet is required to install missing system dependencies. Install App Installer from the Microsoft Store, or rerun with -SkipSystemDependencies.'
         }
 
@@ -428,32 +325,17 @@ try {
         Install-MiKTeXTemplatePackages
         Test-LaTeXTemplateDependencies
 
-        if ($needsPython) {
-            Install-WinGetPackage -Id 'Python.Python.3.13' -DisplayName 'Python 3.13'
-            $pythonCommand = @(Find-PythonCommand)
-        }
-        else {
-            Write-Host "  Python command: $($pythonCommand -join ' ')"
-        }
-
-        if ($pythonCommand.Count -eq 0) {
-            throw 'Python was installed but is not visible in this PowerShell session. Open a new PowerShell window and run this script again.'
-        }
-
-        $pythonCommand = @(Install-PythonPdfLibraries `
-            -PythonCommand $pythonCommand `
-            -RepositoryRoot $repositoryRoot)
     }
 
     Write-Step '[3/5] Installing Node.js dependencies...'
-    Invoke-CheckedCommand -FilePath 'pnpm' -Arguments @('install', '--frozen-lockfile')
+    Invoke-Pnpm -PnpmCommand $pnpmCommand -Arguments @('install', '--frozen-lockfile')
 
     Write-Step '[4/5] Initializing JobBot...'
-    Invoke-CheckedCommand -FilePath 'pnpm' -Arguments @('jobbot', 'init-db')
+    Invoke-Pnpm -PnpmCommand $pnpmCommand -Arguments @('jobbot', 'init-db')
 
     Write-Step '[5/5] Verifying installation...'
-    Invoke-CheckedCommand -FilePath 'pnpm' -Arguments @('typecheck')
-    Invoke-CheckedCommand -FilePath 'pnpm' -Arguments @('test')
+    Invoke-Pnpm -PnpmCommand $pnpmCommand -Arguments @('typecheck')
+    Invoke-Pnpm -PnpmCommand $pnpmCommand -Arguments @('test')
     if (-not $SkipSystemDependencies) {
         Resolve-PdfToolPaths
         foreach ($command in @('pdflatex', 'pdftoppm', 'pdfinfo', 'pdftotext')) {
@@ -461,10 +343,7 @@ try {
                 throw "$command was installed but is not available after resolving the WinGet installation paths."
             }
         }
-        if (-not (Test-PythonPdfLibraries -PythonCommand $pythonCommand)) {
-            throw 'Python PDF libraries failed their import check.'
-        }
-        Write-Host '  LaTeX, Poppler, and Python PDF libraries verified'
+        Write-Host '  LaTeX and Poppler verified'
     }
     Write-Host '  TypeScript and automated tests passed'
 
@@ -472,7 +351,7 @@ try {
     Write-Host '=== Setup complete ===' -ForegroundColor Green
     Write-Host ''
     Write-Host 'Next steps:'
-    Write-Host '  1. Start the UI:  pnpm jobbot ui'
+    Write-Host "  1. Start the UI:  $($pnpmCommand -join ' ') jobbot ui"
     Write-Host '  2. Open:          http://localhost:3000'
     Write-Host '  3. Ask your AI coding agent to interview you and create your profile.'
 }

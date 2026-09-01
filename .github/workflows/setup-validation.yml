@@ -1,6 +1,7 @@
 name: Setup validation
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -13,18 +14,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Enable pinned pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@10.15.1 --activate
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: corepack pnpm install --frozen-lockfile
       - name: Parse Bash setup
         run: bash -n scripts/setup.sh
       - name: ShellCheck setup
         run: shellcheck scripts/setup.sh
       - name: Execute controlled Linux setup flow
-        run: pnpm vitest run tests/setup.test.ts
+        run: corepack pnpm vitest run tests/setup.test.ts
 
   windows-setup-syntax:
     runs-on: windows-latest
@@ -33,13 +30,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Enable pinned pnpm
-        shell: powershell
-        run: |
-          corepack enable
-          corepack prepare pnpm@10.15.1 --activate
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: corepack pnpm install --frozen-lockfile
       - name: Parse PowerShell setup
         shell: powershell
         run: |
@@ -55,4 +47,4 @@ jobs:
             exit 1
           }
       - name: Execute controlled Windows setup flow
-        run: pnpm vitest run tests/setup.test.ts
+        run: corepack pnpm vitest run tests/setup.test.ts

@@ -31,7 +31,7 @@ cd jobbot
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-That's it. The script installs LaTeX, Poppler, Python PDF libraries, and pnpm dependencies; initializes the database; then runs type-checking and the automated test suite. It also compiles a disposable document using JobBot's real resume-template packages, so a successful setup means PDF generation is actually usable. On Windows, the script repairs the current PowerShell session's MiKTeX/Poppler paths and preinstalls the required MiKTeX packages.
+That's it. The script installs LaTeX, Poppler, and pnpm dependencies; initializes the database; then runs type-checking and the automated test suite. It also compiles a disposable document using JobBot's real resume-template packages, so a successful setup means PDF generation is actually usable. On Windows, the script repairs the current PowerShell session's MiKTeX/Poppler paths and preinstalls the required MiKTeX packages.
 
 Then open the repository in your preferred AI coding agent and say "let's fill in my profile." For Claude Code, if installed:
 
@@ -57,7 +57,7 @@ Windows PowerShell:
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-To install only the web UI dependencies and skip LaTeX/Poppler/Python:
+To install only the web UI dependencies and skip LaTeX/Poppler:
 
 ```powershell
 .\scripts\setup.ps1 -SkipSystemDependencies
@@ -65,7 +65,7 @@ To install only the web UI dependencies and skip LaTeX/Poppler/Python:
 
 ### Manual install
 
-Windows users should normally run `scripts/setup.ps1`. For a manual Windows installation, install `MiKTeX.MiKTeX` and `oschwartz10612.Poppler` with WinGet, then install the Python libraries listed below. The setup script additionally provisions the MiKTeX packages used by `resumes/master.tex`: `titlesec`, `marvosym`, `enumitem`, `hyperref`, `fancyhdr`, `tabularx`, `lato`, and `fontawesome5`.
+Windows users should normally run `scripts/setup.ps1`. For a manual Windows installation, install `MiKTeX.MiKTeX` and `oschwartz10612.Poppler` with WinGet. The setup script additionally provisions the MiKTeX packages used by `resumes/master.tex`: `titlesec`, `marvosym`, `enumitem`, `hyperref`, `fancyhdr`, `tabularx`, `lato`, and `fontawesome5`.
 
 ```bash
 # System: LaTeX (for resume/cover-letter PDFs)
@@ -77,12 +77,7 @@ sudo apt update && sudo apt install -y \
   texlive-fonts-extra
 
 # System: poppler-utils (for PDF-to-image conversion in visual audit)
-sudo apt install -y poppler-utils python3-venv
-
-# Hash-locked PDF helpers in a project-managed environment
-python3 -m venv local/python-venv
-local/python-venv/bin/python -m pip install \
-  --only-binary=:all: --require-hashes -r requirements-pdf.lock
+sudo apt install -y poppler-utils
 
 # Node.js
 pnpm install
@@ -101,7 +96,6 @@ pnpm jobbot init-db
 | `texlive-fonts-recommended` | Core fonts, Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5** (icons), **lato** (body font) |
 | `poppler-utils` | **pdftoppm** — PDF → PNG for visual audit |
-| `python3-venv` + `requirements-pdf.lock` | Isolated, version- and hash-locked PDF generation, extraction, inspection, and fallback rendering |
 
 ### API keys and PDF audit providers
 
@@ -264,6 +258,6 @@ jobbot/
 
 ## Tech Stack
 
-TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · OpenAI/Claude vision · poppler-utils · PyMuPDF · Vitest
+TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · OpenAI/Claude vision · poppler-utils · Vitest
 
 Designed for use with **Claude Code, Codex, and other AI coding agents** on Windows PowerShell or WSL2/Linux.

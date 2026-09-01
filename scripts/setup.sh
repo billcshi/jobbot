@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. Installs LaTeX (texlive) for resume/cover-letter PDF generation
-#   2. Installs Poppler and Python PDF libraries for PDF verification
+#   2. Installs Poppler for PDF verification
 #   3. Installs Node.js dependencies via pnpm
 #   4. Creates and initializes the local SQLite database
 #   5. Runs post-install verification
@@ -20,8 +20,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 PNPM_VERSION='10.15.1'
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_VENV="${JOBBOT_SETUP_PYTHON_VENV:-$REPOSITORY_ROOT/local/python-venv}"
-PYTHON_REQUIREMENTS="$REPOSITORY_ROOT/requirements-pdf.lock"
+PNPM_CMD=()
 
 cd "$REPOSITORY_ROOT"
 
@@ -45,26 +44,24 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
 fi
 
 CURRENT_PNPM_VERSION="$(pnpm --version 2>/dev/null || true)"
-if [ "$CURRENT_PNPM_VERSION" != "$PNPM_VERSION" ]; then
-  if command -v corepack &>/dev/null; then
-    echo "  Enabling pinned pnpm $PNPM_VERSION with Corepack..."
-    corepack enable
-    corepack prepare "pnpm@$PNPM_VERSION" --activate
-    hash -r
-  else
-    echo -e "${RED}pnpm $PNPM_VERSION is required and Corepack is unavailable.${NC}"
-    echo "  Install pnpm from https://pnpm.io/installation and rerun setup."
-    exit 1
-  fi
-fi
-echo "  pnpm $(pnpm --version)"
-
-if [ "$(pnpm --version)" != "$PNPM_VERSION" ]; then
-  echo -e "${RED}pnpm $PNPM_VERSION is required; found $(pnpm --version).${NC}"
+if [ "$CURRENT_PNPM_VERSION" = "$PNPM_VERSION" ]; then
+  PNPM_CMD=(pnpm)
+elif command -v corepack &>/dev/null; then
+  PNPM_CMD=(corepack pnpm)
+else
+  echo -e "${RED}pnpm $PNPM_VERSION is required and Corepack is unavailable.${NC}"
+  echo "  Install pnpm from https://pnpm.io/installation and rerun setup."
   exit 1
 fi
 
-# ---- System dependencies (LaTeX + poppler + python3-pip) --------------------
+ACTIVE_PNPM_VERSION="$("${PNPM_CMD[@]}" --version 2>/dev/null || true)"
+if [ "$ACTIVE_PNPM_VERSION" != "$PNPM_VERSION" ]; then
+  echo -e "${RED}pnpm $PNPM_VERSION is required; found ${ACTIVE_PNPM_VERSION:-nothing}.${NC}"
+  exit 1
+fi
+echo "  pnpm $ACTIVE_PNPM_VERSION (via ${PNPM_CMD[*]})"
+
+# ---- System dependencies (LaTeX + Poppler) ---------------------------------
 echo ""
 echo -e "${BOLD}[2/5] Installing system dependencies...${NC}"
 echo "  This may take a few minutes on first install."
@@ -94,17 +91,10 @@ else
   PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL poppler-utils"
 fi
 
-# Check Python and venv support - used by isolated PDF helpers
-if command -v python3 &>/dev/null && python3 -m venv --help &>/dev/null; then
-  echo "  Python virtual environments available ($(python3 --version))"
-else
-  PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL python3 python3-venv"
-fi
-
 if [ -n "$PACKAGES_TO_INSTALL" ]; then
   if ! command -v apt-get &>/dev/null; then
     echo -e "${RED}Automatic system-package installation currently supports Debian/Ubuntu (apt-get).${NC}"
-    echo "  Install LaTeX, Poppler, Python 3, and pip manually, then rerun setup."
+    echo "  Install LaTeX and Poppler manually, then rerun setup."
     exit 1
   fi
   APT_PREFIX=()
@@ -121,25 +111,16 @@ if [ -n "$PACKAGES_TO_INSTALL" ]; then
   echo -e "  ${GREEN}System packages installed${NC}"
 fi
 
-# Install Python PDF libraries into a project-managed, gitignored environment.
-mkdir -p "$REPOSITORY_ROOT/local"
-if [ ! -x "$PYTHON_VENV/bin/python" ]; then
-  python3 -m venv "$PYTHON_VENV"
-fi
-"$PYTHON_VENV/bin/python" -m pip install --quiet --only-binary=:all: --require-hashes -r "$PYTHON_REQUIREMENTS"
-"$PYTHON_VENV/bin/python" -c "import fitz, reportlab, pdfplumber, pypdf"
-echo -e "  ${GREEN}Python PDF libraries installed in local/python-venv${NC}"
-
 # ---- Node.js dependencies --------------------------------------------------
 echo ""
 echo -e "${BOLD}[3/5] Installing Node.js dependencies...${NC}"
-pnpm install --frozen-lockfile
+"${PNPM_CMD[@]}" install --frozen-lockfile
 echo -e "  ${GREEN}Dependencies installed${NC}"
 
 # ---- Initialize JobBot -----------------------------------------------------
 echo ""
 echo -e "${BOLD}[4/5] Initializing JobBot...${NC}"
-pnpm jobbot init-db
+"${PNPM_CMD[@]}" jobbot init-db
 echo -e "  ${GREEN}local/ created, database initialized${NC}"
 
 # ---- Verify installation --------------------------------------------------
@@ -186,17 +167,16 @@ cleanup_latex_smoke
 trap - EXIT
 echo -e "  ${GREEN}JobBot LaTeX template dependency smoke test passed${NC}"
 
-"$PYTHON_VENV/bin/python" -c "import fitz, reportlab, pdfplumber, pypdf"
-pnpm typecheck
-pnpm test
-echo -e "  ${GREEN}LaTeX, Poppler, Python PDF libraries, types, and tests verified${NC}"
+"${PNPM_CMD[@]}" typecheck
+"${PNPM_CMD[@]}" test
+echo -e "  ${GREEN}LaTeX, Poppler, types, and tests verified${NC}"
 
 # ---- Done ------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}=== Setup complete ===${NC}"
 echo ""
 echo "  Next steps:"
-echo "    1. Start the UI:  pnpm jobbot ui"
+echo "    1. Start the UI:  ${PNPM_CMD[*]} jobbot ui"
 echo "    2. Open:          http://localhost:3000"
 echo "    3. Ask your AI coding agent to interview you and create your profile."
 echo ""

@@ -31,7 +31,7 @@ cd jobbot
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-一行命令安装 LaTeX、Poppler、Python PDF 库和 pnpm 依赖，初始化数据库，并运行类型检查与自动化测试。脚本还会使用 JobBot 简历模板的真实宏包编译一次临时 PDF，因此安装成功就代表 PDF 生成功能确实可用。Windows 脚本会自动修复当前 PowerShell 会话中的 MiKTeX/Poppler 路径，并预装模板需要的 MiKTeX 宏包。
+一行命令安装 LaTeX、Poppler 和 pnpm 依赖，初始化数据库，并运行类型检查与自动化测试。脚本还会使用 JobBot 简历模板的真实宏包编译一次临时 PDF，因此安装成功就代表 PDF 生成功能确实可用。Windows 脚本会自动修复当前 PowerShell 会话中的 MiKTeX/Poppler 路径，并预装模板需要的 MiKTeX 宏包。
 
 然后在你常用的 AI 编码助手中打开项目，并告诉它“开始填写我的个人资料”。如果已经安装 Claude Code，可以运行：
 
@@ -57,7 +57,7 @@ Windows PowerShell：
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-如果暂时只使用 Web UI、不安装 LaTeX、Poppler 和 Python：
+如果暂时只使用 Web UI、不安装 LaTeX 和 Poppler：
 
 ```powershell
 .\scripts\setup.ps1 -SkipSystemDependencies
@@ -65,7 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 
 ### 手动安装
 
-Windows 用户通常应直接运行 `scripts/setup.ps1`。如果手动安装 Windows 依赖，请通过 WinGet 安装 `MiKTeX.MiKTeX` 和 `oschwartz10612.Poppler`，再安装下方列出的 Python 库。安装脚本还会准备 `resumes/master.tex` 使用的 MiKTeX 宏包：`titlesec`、`marvosym`、`enumitem`、`hyperref`、`fancyhdr`、`tabularx`、`lato` 和 `fontawesome5`。
+Windows 用户通常应直接运行 `scripts/setup.ps1`。如果手动安装 Windows 依赖，请通过 WinGet 安装 `MiKTeX.MiKTeX` 和 `oschwartz10612.Poppler`。安装脚本还会准备 `resumes/master.tex` 使用的 MiKTeX 宏包：`titlesec`、`marvosym`、`enumitem`、`hyperref`、`fancyhdr`、`tabularx`、`lato` 和 `fontawesome5`。
 
 ```bash
 # 系统依赖：LaTeX（用于简历/求职信 PDF 生成）
@@ -77,8 +77,7 @@ sudo apt update && sudo apt install -y \
   texlive-fonts-extra
 
 # 系统依赖：poppler-utils（用于 PDF 转图片，视觉审核）
-sudo apt install -y poppler-utils python3-pip
-pip3 install PyMuPDF reportlab pdfplumber pypdf --quiet --break-system-packages
+sudo apt install -y poppler-utils
 
 # Node.js 依赖
 pnpm install
@@ -97,7 +96,6 @@ pnpm jobbot init-db
 | `texlive-fonts-recommended` | 核心字体、Latin Modern |
 | `texlive-fonts-extra` | **fontawesome5**（图标）、**lato**（正文字体） |
 | `poppler-utils` | **pdftoppm** — PDF → PNG 用于视觉审核 |
-| `python3-pip` + `PyMuPDF`、`reportlab`、`pdfplumber`、`pypdf` | PDF 生成、文本提取、检查和备选渲染 |
 
 ### API 密钥与 PDF 审核方式
 
@@ -106,6 +104,7 @@ API 密钥只能保存在 `local/config.yaml` 中；`local/` 已被 gitignore。
 - DeepSeek 用于职位提取、评分、简历定制、内容审核和 AI 辅助资料编辑。要运行完整流水线，需要配置 `api_keys.deepseek`。
 - Anthropic 和 OpenAI 是可选的视觉审核提供方。如果二者都没有配置，JobBot 会默认拒绝通过，除非人工或 AI Agent 明确检查渲染后的 PDF，并记录到 `local/resumes/<job-id>/visual-review.json`。
 - 本地视觉审核会绑定准确的职位 ID、简历版本 ID 和 PDF SHA-256；重新生成或修改 PDF 后，旧审核自动失效。
+- 上述 AI 阶段会把候选人资料事实和职位描述发送给 DeepSeek；渲染后的简历页面图片会发送给配置的 Anthropic 或 OpenAI 视觉服务。Prompt/调试日志以明文保存在已被 gitignore 的 `local/` 目录中，请把该目录视为敏感数据。
 
 ## 重要：个人数据与项目代码分离
 
@@ -184,7 +183,7 @@ Web UI 提供：带分析图表的仪表板、流水线管理、批量添加链�
 | `powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1` | Windows 一键完整安装（MiKTeX + Poppler + pnpm + 初始化） |
 | `pnpm jobbot init-db` | 创建 `local/`（从模板）+ 初始化 SQLite 数据库结构 |
 | `pnpm jobbot add-url <url> [url2 ...]` | 添加一个或多个职位链接（自动检测 ATS 类型） |
-| `pnpm jobbot discover --query <关键词> [--location <城市>] [--source <平台>] [--ingest]` | 搜索招聘网站上的新职位 |
+| `pnpm jobbot discover --query <英文关键词> [--location <英文城市>] [--source <平台>] [--company <ATS slug>] [--work-mode any\|remote\|onsite] [--depth quick\|deep] [--ingest]` | 搜索招聘网站上的新职位；CLI 与 UI 都会拒绝中文搜索输入 |
 | `pnpm jobbot extract [--job <id>]` | 抓取 + LLM 提取职位详情 |
 | `pnpm jobbot score` | LLM 打分（对照偏好设置） |
 | `pnpm jobbot list [--tier <tier>]` | 以表格形式列出所有职位 |
