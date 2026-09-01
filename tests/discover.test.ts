@@ -26,6 +26,15 @@ describe('job discovery', () => {
     expect(normalizeDiscoveryQuery('AI agent')).toBe('AI agent');
   });
 
+  it('rejects a whitespace-only query before contacting any source', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(discoverJobsDetailed({ query: ' \t\r\n ', sources: ['jobicy'] }))
+      .rejects.toThrow('Discovery query is required');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('normalizes supported English locations and unrestricted values', () => {
     expect(normalizeDiscoveryLocation('Remote')).toBeUndefined();
     expect(normalizeDiscoveryLocation('Anywhere')).toBeUndefined();
@@ -177,6 +186,40 @@ describe('job discovery', () => {
 
     expect(discovery.results).toHaveLength(1);
     expect(discovery.results[0]?.title).toBe('Software Engineer, AI Agent Platform');
+  });
+
+  it('preserves internship and seniority constraints for AI agent searches', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [
+      {
+        jobTitle: 'AI Agent Engineer',
+        companyName: 'General AI',
+        jobGeo: 'Anywhere',
+        url: 'https://example.com/general-ai-agent',
+      },
+      {
+        jobTitle: 'AI Agent Engineer Intern',
+        companyName: 'Intern AI',
+        jobGeo: 'Anywhere',
+        url: 'https://example.com/intern-ai-agent',
+      },
+      {
+        jobTitle: 'Senior AI Agent Engineer',
+        companyName: 'Senior AI',
+        jobGeo: 'Anywhere',
+        url: 'https://example.com/senior-ai-agent',
+      },
+    ] })));
+
+    const internship = await discoverJobsDetailed({
+      query: 'AI agent internship', sources: ['jobicy'],
+    });
+    expect(internship.results.map(job => job.company)).toEqual(['Intern AI']);
+
+    resetDiscoveryCacheForTests();
+    const senior = await discoverJobsDetailed({
+      query: 'senior AI agent engineer', sources: ['jobicy'],
+    });
+    expect(senior.results.map(job => job.company)).toEqual(['Senior AI']);
   });
 
   it('accepts technical agent-runtime titles without matching customer agents', async () => {
@@ -363,6 +406,60 @@ describe('job discovery', () => {
       source: 'greenhouse',
       status: 'skipped',
       message: 'greenhouse requires a company board name.',
+    }));
+  });
+
+  it('matches a canonical city against a shorter ATS location', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [{
+      title: 'Backend Engineer',
+      absolute_url: 'https://boards.greenhouse.io/acme/jobs/1',
+      location: { name: 'Seattle' },
+      updated_at: '2026-08-25',
+    }] })));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', location: 'Seattle', company: 'acme', sources: ['greenhouse'],
+    });
+
+    expect(discovery.results).toHaveLength(1);
+    expect(discovery.diagnostics[0]).toEqual(expect.objectContaining({ status: 'ok' }));
+  });
+
+  it('reports ATS outages and malformed responses instead of empty results', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unavailable', { status: 503 })));
+    const outage = await discoverJobsDetailed({
+      query: 'backend', company: 'acme', sources: ['greenhouse'],
+    });
+    expect(outage.diagnostics[0]).toEqual(expect.objectContaining({
+      status: 'unavailable', httpStatus: 503,
+    }));
+
+    resetDiscoveryCacheForTests();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{not-json', {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })));
+    const malformed = await discoverJobsDetailed({
+      query: 'backend', company: 'acme', sources: ['greenhouse'],
+    });
+    expect(malformed.diagnostics[0]).toEqual(expect.objectContaining({
+      status: 'error', httpStatus: 200,
+    }));
+  });
+
+  it('reports an ATS hard timeout as source unavailability', async () => {
+    const aborted = AbortSignal.abort(new Error('deadline'));
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(aborted);
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      throw init?.signal?.reason ?? new Error('aborted');
+    }));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', company: 'acme', sources: ['greenhouse'],
+    });
+
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(20_000);
+    expect(discovery.diagnostics[0]).toEqual(expect.objectContaining({
+      status: 'unavailable', message: expect.stringContaining('timed out after 20000ms'),
     }));
   });
 

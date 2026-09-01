@@ -157,6 +157,52 @@ async function fetchPublicJson(url: string, timeoutMs = 20_000): Promise<unknown
   return value;
 }
 
+async function fetchAtsJson(
+  source: 'Greenhouse' | 'Lever' | 'Ashby',
+  url: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  const timeoutMs = 20_000;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'application/json',
+        ...init.headers,
+      },
+      signal: timeoutSignal,
+    });
+  } catch (error) {
+    if (timeoutSignal.aborted) {
+      throw new DiscoverySourceError(`${source} request timed out after ${timeoutMs}ms`, undefined, true);
+    }
+    throw new DiscoverySourceError(
+      `${source} network request failed: ${error instanceof Error ? error.message : String(error)}`,
+      undefined,
+      true,
+    );
+  }
+  if (!response.ok) {
+    throw new DiscoverySourceError(
+      `${source} API returned HTTP ${response.status}`,
+      response.status,
+      response.status === 429 || response.status >= 500,
+    );
+  }
+  try {
+    return await response.json() as unknown;
+  } catch (error) {
+    throw new DiscoverySourceError(
+      `${source} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      response.status,
+      false,
+    );
+  }
+}
+
 export function normalizeDiscoveryQuery(query: string): string {
   return query.replace(/\s+/g, ' ').trim();
 }
@@ -259,7 +305,19 @@ function queryMatches(text: string, query: string): boolean {
     const hasAgentFamily = /(^|[^a-z0-9])agent(?:ic|force)?([^a-z0-9]|$)/i.test(normalizedText);
     const hasLlm = /(^|[^a-z0-9])llms?([^a-z0-9]|$)/i.test(normalizedText);
     const hasTechnicalContext = /(^|[^a-z0-9])(runtime|systems?|software|engineer|backend|platform|developer)([^a-z0-9]|$)/i.test(normalizedText);
-    return (hasAi && hasAgentFamily) || hasLlm || (hasAgentFamily && hasTechnicalContext);
+    if (!((hasAi && hasAgentFamily) || hasLlm || (hasAgentFamily && hasTechnicalContext))) {
+      return false;
+    }
+
+    // Treat "AI agent" as one technical concept, but keep every other
+    // discriminating term (for example "internship" or "senior") mandatory.
+    const remainingTokens = tokens.filter(token => token !== 'ai' && token !== 'agent');
+    const genericTokens = new Set(['engineer', 'developer', 'software']);
+    const remainingRoleTokens = remainingTokens.filter(token => !genericTokens.has(token));
+    const requiredRemainingTokens = remainingRoleTokens.length > 0
+      ? remainingRoleTokens
+      : remainingTokens;
+    return requiredRemainingTokens.every(tokenMatches);
   }
   const genericTokens = new Set(['ai', 'engineer', 'developer', 'software']);
   const roleTokens = tokens.filter(token => !genericTokens.has(token));
@@ -561,12 +619,7 @@ async function searchGreenhouse(
     const apiUrl = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(company)}/jobs`;
 
     try {
-      const resp = await fetch(apiUrl, {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-      });
-      if (!resp.ok) continue;
-
-      const data = (await resp.json()) as {
+      const data = await fetchAtsJson('Greenhouse', apiUrl) as {
         jobs?: Array<{
           title: string;
           absolute_url: string;
@@ -583,7 +636,7 @@ async function searchGreenhouse(
         const jobLocation = job.location?.name || 'Unknown';
         const mode = inferWorkMode(jobLocation);
         const titleMatch = jobQueryMatchRank(job.title, job.content ?? '', normalizeDiscoveryQuery(query)) !== null;
-        const locMatch = !location || jobLocation.toLowerCase().includes(location.toLowerCase());
+        const locMatch = onsiteLocationMatches(jobLocation, location);
 
         if (titleMatch && locMatch && workModeMatches(mode, workMode) && isHttpUrl(job.absolute_url)) {
           results.push({
@@ -598,7 +651,10 @@ async function searchGreenhouse(
         }
       }
     } catch (err) {
-      logger.debug(`Greenhouse API error for ${company}: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof DiscoverySourceError) throw err;
+      throw new DiscoverySourceError(
+        `Greenhouse response handling failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -634,12 +690,7 @@ async function searchLever(
     const apiUrl = `https://api.lever.co/v0/postings/${encodeURIComponent(company)}`;
 
     try {
-      const resp = await fetch(apiUrl, {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-      });
-      if (!resp.ok) continue;
-
-      const data = (await resp.json()) as Array<{
+      const data = await fetchAtsJson('Lever', apiUrl) as Array<{
         text: string;
         host: string;
         url: string;
@@ -655,8 +706,7 @@ async function searchLever(
         const titleMatch = jobQueryMatchRank(job.text, job.descriptionPlain ?? '', normalizeDiscoveryQuery(query)) !== null;
         const jobLocation = job.categories?.location || '';
         const mode = inferWorkMode(jobLocation || 'Unknown');
-        const locMatch = !location ||
-          jobLocation.toLowerCase().includes(location.toLowerCase());
+        const locMatch = onsiteLocationMatches(jobLocation, location);
         const jobUrl = job.url || job.host;
 
         if (titleMatch && locMatch && workModeMatches(mode, workMode) && isHttpUrl(jobUrl)) {
@@ -672,7 +722,10 @@ async function searchLever(
         }
       }
     } catch (err) {
-      logger.debug(`Lever API error for ${company}: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof DiscoverySourceError) throw err;
+      throw new DiscoverySourceError(
+        `Lever response handling failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -708,22 +761,17 @@ async function searchAshby(
     const apiUrl = `https://jobs.ashbyhq.com/api/nonuser/${encodeURIComponent(company)}`;
 
     try {
-      const resp = await fetch(apiUrl, {
+      const data = await fetchAtsJson('Ashby', apiUrl, {
         method: 'POST',
         headers: {
-          'User-Agent': USER_AGENT,
           'Content-Type': 'application/json',
-          Accept: 'application/json',
         },
         body: JSON.stringify({
           query,
           location: location || '',
           includeDepartmentRestricted: true,
         }),
-      });
-      if (!resp.ok) continue;
-
-      const data = (await resp.json()) as {
+      }) as {
         jobs?: Array<{
           title: string;
           location: string;
@@ -741,7 +789,7 @@ async function searchAshby(
         const jobLocation = job.location || 'Unknown';
         const mode = inferWorkMode(jobLocation);
         if (jobQueryMatchRank(job.title, job.descriptionHtml ?? '', normalizeDiscoveryQuery(query)) === null) continue;
-        if (location && !jobLocation.toLowerCase().includes(location.toLowerCase())) continue;
+        if (!onsiteLocationMatches(jobLocation, location)) continue;
         if (!workModeMatches(mode, workMode) || !isHttpUrl(job.jobUrl)) continue;
         results.push({
           title: job.title,
@@ -754,7 +802,10 @@ async function searchAshby(
         });
       }
     } catch (err) {
-      logger.debug(`Ashby API error for ${company}: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof DiscoverySourceError) throw err;
+      throw new DiscoverySourceError(
+        `Ashby response handling failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -790,13 +841,17 @@ const SOURCE_HANDLERS: Record<DiscoverySource, SearchHandler> = {
  * Greenhouse/Lever/Ashby require a company name for per-board API access.
  */
 export async function discoverJobsDetailed(opts: DiscoverOptions): Promise<DiscoverResponse> {
-  if (/\p{Script=Han}/u.test(`${opts.query} ${opts.location ?? ''}`)) {
+  const query = normalizeDiscoveryQuery(opts.query);
+  if (!query) {
+    throw new Error('Discovery query is required.');
+  }
+  if (/\p{Script=Han}/u.test(`${query} ${opts.location ?? ''}`)) {
     throw new Error('Job keywords and location must be entered in English.');
   }
   const sources = opts.sources && opts.sources.length > 0
     ? [...new Set(opts.sources)]
     : [...DEFAULT_SOURCES, ...COMPANY_SOURCES];
-  const { query, company } = opts;
+  const { company } = opts;
   const location = normalizeDiscoveryLocation(opts.location);
   const workMode = opts.workMode ?? 'any';
   const searchDepth = opts.searchDepth ?? 'quick';
