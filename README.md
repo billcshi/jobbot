@@ -106,6 +106,28 @@ Store API keys only in `local/config.yaml`; `local/` is gitignored. Never put a 
 - A local visual review is bound to the exact job ID, resume-version ID, and PDF SHA-256. Regenerating or changing the PDF invalidates the old review.
 - Candidate/profile facts and job descriptions are sent to DeepSeek for those AI stages. Rendered resume page images are sent to the configured Anthropic or OpenAI visual provider. Prompt/debug logs remain plaintext under the gitignored `local/` directory.
 
+After actually inspecting the rendered PDF, a local reviewer can create
+`local/resumes/<job-id>/visual-review.json` with this schema:
+
+```json
+{
+  "schema_version": 1,
+  "job_id": 123,
+  "resume_version_id": 456,
+  "resume_sha256": "exact SHA-256 from the canonical PDF artifact",
+  "status": "passed",
+  "reviewer_type": "human",
+  "reviewer": "reviewer name",
+  "score": 90,
+  "summary": "Inspected the rendered PDF; no clipping or layout defects found.",
+  "issues": []
+}
+```
+
+`reviewer_type` must be `human` or `agent`. Each issue, when present, must use
+`high`, `medium`, or `low` severity and one of `accuracy`, `formatting`,
+`keywords`, `layout`, `visual`, or `content` as its category.
+
 ## Important: Personal Data vs. Project Code
 
 This repo is designed to be **safe to share on GitHub**. Your personal data lives in `local/` — a directory that is **gitignored and never committed**.

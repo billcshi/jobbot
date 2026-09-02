@@ -86,7 +86,8 @@ Return only valid JSON. Do not use Markdown fences. Use this exact V2 shape:
       "id": "requirement:1",
       "text": "Build and operate backend services",
       "kind": "responsibility",
-      "priority": "required"
+      "priority": "required",
+      "sourceSpans": ["Build and operate backend services"]
     }
   ],
   "match_plan": [

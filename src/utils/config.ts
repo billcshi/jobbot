@@ -149,9 +149,7 @@ const DEFAULT_THINKING: DeepseekThinkingConfig = {
     extract: 'disabled',     // structured extraction, no reasoning needed
     customize: 'auto',       // Flash stays concise; heavier models may reason
     'cover-letter': 'auto',
-    'audit-ats-screener': 'auto',
-    'audit-hiring-manager': 'auto',
-    'audit-format-reviewer': 'auto',
+    'audit-content': 'auto',
   },
 };
 

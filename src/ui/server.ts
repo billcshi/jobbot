@@ -1653,9 +1653,9 @@ app.get('/api/market-data', async (_req, res) => {
 
 app.get('/api/discover', async (req, res) => {
   const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
-  const location = typeof req.query.location === 'string' ? req.query.location : undefined;
+  const location = typeof req.query.location === 'string' ? req.query.location.trim() || undefined : undefined;
   const source = typeof req.query.source === 'string' ? req.query.source : undefined;
-  const company = typeof req.query.company === 'string' ? req.query.company : undefined;
+  const company = typeof req.query.company === 'string' ? req.query.company.trim() || undefined : undefined;
   const workMode = typeof req.query.workMode === 'string' ? req.query.workMode : 'any';
   const searchDepth = typeof req.query.searchDepth === 'string' ? req.query.searchDepth : 'quick';
 
@@ -1675,7 +1675,8 @@ app.get('/api/discover', async (req, res) => {
     res.status(400).json({ errorCode: 'DISCOVER_DEPTH_INVALID', error: `Unknown search depth: ${searchDepth}` });
     return;
   }
-  if (searchDepth === 'deep' && !location && (!source || source === 'themuse')) {
+  const unrestrictedLocation = !location || /^(?:remote|anywhere|any)$/iu.test(location);
+  if (searchDepth === 'deep' && unrestrictedLocation && (!source || source === 'themuse')) {
     res.status(400).json({ errorCode: 'DISCOVER_LOCATION_REQUIRED', error: 'Deep search requires a work location when The Muse is enabled.' });
     return;
   }

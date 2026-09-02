@@ -77,6 +77,9 @@ function requirement(value: unknown, path: string): JobRequirement {
     text: string(item['text'], `${path}.text`),
     kind: kind as RequirementKind,
     priority: priority as RequirementPriority,
+    ...(item['sourceSpans'] === undefined
+      ? {}
+      : { sourceSpans: strings(item['sourceSpans'], `${path}.sourceSpans`) }),
   };
 }
 

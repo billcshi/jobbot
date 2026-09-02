@@ -6,6 +6,7 @@ import {
   createJobRequirements,
   extractJobRequirements,
   requirementCandidateSpans,
+  storedRequirementsToDomain,
   validateRequirementCoverage,
 } from '../src/jobs/requirements.js';
 import { validateResume } from '../src/resume/validate.js';
@@ -177,6 +178,19 @@ describe('summary provenance normalization', () => {
   });
 });
 
+describe('frozen requirement provenance', () => {
+  it('preserves verified source spans when rebuilding domain requirements', () => {
+    expect(storedRequirementsToDomain([{
+      category: 'skill',
+      text: 'Build TypeScript backend services',
+      importance: 'required',
+      sourceSpans: ['  Build TypeScript backend services.  '],
+    }])[0]).toEqual(expect.objectContaining({
+      sourceSpans: ['Build TypeScript backend services.'],
+    }));
+  });
+});
+
 describe('hash-bound local visual review', () => {
   it('accepts a review bound to the exact job, resume version, and PDF hash', () => {
     expect(parseLocalVisualReview({
@@ -225,6 +239,19 @@ describe('hash-bound local visual review', () => {
       review: null,
       error: 'Local visual review PDF hash does not match',
     });
+  });
+
+  it('rejects an empty visual-review summary', () => {
+    expect(() => parseLocalVisualReview({
+      schema_version: 1,
+      job_id: 2,
+      resume_version_id: 4,
+      resume_sha256: 'abc123',
+      reviewer_type: 'human',
+      reviewer: 'Reviewer',
+      status: 'passed', score: 90, summary: '   ', issues: [],
+    }, { jobId: 2, resumeVersionId: 4, resumeSha256: 'abc123' }))
+      .toThrow('summary must be a non-empty string');
   });
 });
 
@@ -323,6 +350,29 @@ describe('resume truth validation', () => {
 
     const result = validateResume(PROFILE, output, { requirements: frozen });
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'requirement_mismatch' }));
+  });
+
+  it('blocks a tailoring response that drops frozen requirement source spans', () => {
+    const output = validResume();
+    const frozen = structuredClone(output.job_requirements);
+    frozen[0]!.sourceSpans = ['Build reliable TypeScript services'];
+
+    const result = validateResume(PROFILE, output, {
+      requirements: frozen,
+      requireRequirementSourceSpans: true,
+    });
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'requirement_mismatch' }));
+  });
+
+  it('allows a legacy bound resume to omit source spans while still checking core fields', () => {
+    const output = validResume();
+    const frozen = structuredClone(output.job_requirements);
+    frozen[0]!.sourceSpans = ['Build reliable TypeScript services'];
+
+    expect(validateResume(PROFILE, output, { requirements: frozen })).toEqual({
+      valid: true,
+      issues: [],
+    });
   });
 });
 

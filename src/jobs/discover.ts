@@ -16,7 +16,7 @@
  */
 
 import { logger } from '../utils/logger.js';
-import { isHttpUrl } from '../utils/url.js';
+import { isHttpUrl, parseHttpUrl } from '../utils/url.js';
 
 // ----- types ------------------------------------------------------------------
 
@@ -82,6 +82,9 @@ const REMOTE_ONLY_SOURCES: DiscoverySource[] = ['jobicy', 'remotive'];
 const PUBLIC_API_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PUBLIC_API_CACHE_MAX_ENTRIES = 128;
 const responseCache = new Map<string, { expiresAt: number; value: unknown }>();
+const ALL_DISCOVERY_SOURCES: readonly DiscoverySource[] = [
+  'themuse', 'jobicy', 'remotive', 'greenhouse', 'lever', 'ashby', 'linkedin',
+];
 
 export function resetDiscoveryCacheForTests(): void {
   responseCache.clear();
@@ -116,7 +119,10 @@ function pruneResponseCache(now = Date.now()): void {
   for (const [key, entry] of responseCache) {
     if (entry.expiresAt <= now) responseCache.delete(key);
   }
-  while (responseCache.size >= PUBLIC_API_CACHE_MAX_ENTRIES) {
+}
+
+function enforceResponseCacheLimit(): void {
+  while (responseCache.size > PUBLIC_API_CACHE_MAX_ENTRIES) {
     const oldestKey = responseCache.keys().next().value as string | undefined;
     if (!oldestKey) break;
     responseCache.delete(oldestKey);
@@ -154,6 +160,7 @@ async function fetchPublicJson(url: string, timeoutMs = 20_000): Promise<unknown
   responseCache.delete(url);
   pruneResponseCache();
   responseCache.set(url, { expiresAt: Date.now() + PUBLIC_API_CACHE_TTL_MS, value });
+  enforceResponseCacheLimit();
   return value;
 }
 
@@ -242,7 +249,7 @@ function remoteLocationMatches(jobLocation: string, requestedLocation?: string):
 
   const isUnitedStatesLocation = /,\s*[a-z]{2}$/i.test(requestedLocation)
     || /\b(?:united states|usa)\b/i.test(requestedLocation);
-  if (isUnitedStatesLocation && /\b(?:united states|usa|u\.s\.|north america|americas)\b/i.test(jobLocation)) {
+  if (isUnitedStatesLocation && /\b(?:united states|usa|u\.s\.|us|north america|americas)\b/i.test(jobLocation)) {
     return true;
   }
   if (/\bcanada\b/i.test(requestedLocation) && /\b(?:canada|north america|americas)\b/i.test(jobLocation)) {
@@ -251,7 +258,8 @@ function remoteLocationMatches(jobLocation: string, requestedLocation?: string):
   if (/\b(?:japan|singapore|australia)\b/i.test(requestedLocation) && /\b(?:apac|asia[ -]?pacific)\b/i.test(jobLocation)) {
     return true;
   }
-  if (/\b(?:united kingdom|germany)\b/i.test(requestedLocation) && /\b(?:emea|europe)\b/i.test(jobLocation)) {
+  if (/\b(?:united kingdom|germany)\b/i.test(requestedLocation)
+      && /\b(?:emea|europe|european union|eu|uk)\b/i.test(jobLocation)) {
     return true;
   }
 
@@ -325,6 +333,35 @@ function queryMatches(text: string, query: string): boolean {
   return requiredTokens.every(tokenMatches);
 }
 
+function titleHasRoleAnchor(title: string, query: string): boolean {
+  const tokens: string[] = query.toLowerCase().match(/[a-z0-9+#.]+/g) ?? [];
+  const roleTokens = tokens.filter(token => [
+    'agent', 'architect', 'backend', 'data', 'designer', 'developer', 'devops',
+    'director', 'engineer', 'engineering', 'frontend', 'intern', 'internship',
+    'junior', 'lead', 'manager', 'mobile', 'principal', 'product', 'qa',
+    'scientist', 'security', 'senior', 'sre', 'staff',
+  ].includes(token));
+  if (roleTokens.length === 0) return true;
+
+  const tokenMatchesTitle = (token: string): boolean => {
+    if (token === 'engineer' || token === 'engineering' || token === 'developer') {
+      return /\b(?:developer|engineer(?:ing)?)\b/i.test(title);
+    }
+    if (token === 'intern' || token === 'internship') return /\bintern(?:ship)?\b/i.test(title);
+    if (token === 'senior') return /\b(?:senior|sr\.?)\b/i.test(title);
+    if (token === 'junior') return /\b(?:junior|jr\.?|entry[ -]?level|graduate)\b/i.test(title);
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(title);
+  };
+  // Description matches are intentionally conservative: functional and level
+  // words must remain visible in the title. "backend" is the sole exception,
+  // because generic Software/Platform Engineer titles are common and receive a
+  // separate adjacency check below.
+  const requiredTitleTokens = roleTokens.filter(token => token !== 'backend');
+  if (!requiredTitleTokens.every(tokenMatchesTitle)) return false;
+  return roleTokens.some(tokenMatchesTitle);
+}
+
 function jobQueryMatchRank(title: string, contents: string, query: string): 0 | 1 | null {
   if (/\bbackend\b/i.test(query)) {
     const isExcludedTitle = /\b(front[ -]?end|frontend|ios|android|mobile|machine learning|ml|qa|quality assurance|test(?:ing)? engineer|engineer(?:ing)? in test|manager|director)\b/i.test(title);
@@ -332,6 +369,7 @@ function jobQueryMatchRank(title: string, contents: string, query: string): 0 | 
   }
   if (queryMatches(title, query)) return 0;
   if (!contents || !queryMatches(`${title} ${contents}`, query)) return null;
+  if (!titleHasRoleAnchor(title, query)) return null;
 
   if (/\bbackend\b/i.test(query)) {
     // Only expand a description match when the title is still an adjacent
@@ -358,6 +396,37 @@ function workModeMatches(mode: DiscoverResult['workMode'], requested: 'any' | 'r
   return mode === 'onsite' || mode === 'hybrid';
 }
 
+function explicitWorkMode(value: unknown, fallbackLocation: string): DiscoverResult['workMode'] {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'remote') return 'remote';
+    if (normalized === 'hybrid') return 'hybrid';
+    if (normalized === 'on-site' || normalized === 'onsite') return 'onsite';
+  }
+  return inferWorkMode(fallbackLocation);
+}
+
+function atsLocationMatches(
+  jobLocations: readonly string[],
+  requestedLocation: string | undefined,
+  mode: DiscoverResult['workMode'],
+): boolean {
+  const locations = jobLocations.map(value => value.trim()).filter(Boolean);
+  if (!requestedLocation) return true;
+  return mode === 'remote'
+    ? remoteLocationMatches(locations.join(' · '), requestedLocation)
+      || locations.some(value => onsiteLocationMatches(value, requestedLocation))
+    : locations.some(value => onsiteLocationMatches(value, requestedLocation));
+}
+
+function discoveryUrlKey(value: string): string {
+  const url = parseHttpUrl(value);
+  if (!url) return value;
+  url.hash = '';
+  url.searchParams.sort();
+  return url.href;
+}
+
 interface SourceSearchResult {
   results: DiscoverResult[];
   message?: string;
@@ -382,6 +451,7 @@ async function searchTheMuse(
   workMode: 'any' | 'remote' | 'onsite' = 'any',
   searchDepth: 'quick' | 'deep' = 'quick',
 ): Promise<SourceSearchResult> {
+  const deadline = Date.now() + (searchDepth === 'deep' ? THE_MUSE_DEEP_BUDGET_MS : THE_MUSE_QUICK_BUDGET_MS);
   const normalizedQuery = normalizeDiscoveryQuery(query);
   const normalizedLocation = location?.trim().toLowerCase();
   const buildUrl = (page: number): URL => {
@@ -395,7 +465,10 @@ async function searchTheMuse(
     return url;
   };
 
-  const firstPage = record(await fetchPublicJson(buildUrl(0).toString()));
+  const firstPage = record(await fetchPublicJson(
+    buildUrl(0).toString(),
+    Math.max(1, deadline - Date.now()),
+  ));
   const reportedPageCount = firstPage?.['page_count'];
   const availablePageCount = typeof reportedPageCount === 'number' && Number.isFinite(reportedPageCount)
     ? Math.max(1, Math.floor(reportedPageCount))
@@ -427,7 +500,10 @@ async function searchTheMuse(
       const jobLocation = locations.join(' · ') || 'Unknown';
       const mode = inferWorkMode(jobLocation);
       if (!workModeMatches(mode, workMode)) continue;
-      if (!onsiteLocationMatches(jobLocation, normalizedLocation)) continue;
+      // The Muse already applies its location parameter to remote eligibility.
+      // Requiring a returned label such as "Flexible / Remote" to contain the
+      // requested city incorrectly discards valid upstream matches.
+      if (mode !== 'remote' && !onsiteLocationMatches(jobLocation, normalizedLocation)) continue;
 
       const result: DiscoverResult = {
         title,
@@ -447,7 +523,6 @@ async function searchTheMuse(
   collectPage(firstPage);
   if (exactResults.length + relatedResults.length >= maxResults) return sourceSearchResult(currentResults());
 
-  const deadline = Date.now() + (searchDepth === 'deep' ? THE_MUSE_DEEP_BUDGET_MS : THE_MUSE_QUICK_BUDGET_MS);
   const remainingPageNumbers = Array.from({ length: pageCount - 1 }, (_, index) => index + 1);
   let partialMessage = availablePageCount > pageCount
     ? `Partial results: stopped at the ${pageCount}-page request safety limit (${availablePageCount} pages reported).`
@@ -616,16 +691,20 @@ async function searchGreenhouse(
   for (const company of companies) {
     if (results.length >= maxResults) break;
 
-    const apiUrl = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(company)}/jobs`;
+    const apiUrl = new URL(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(company)}/jobs`);
+    // Greenhouse omits job content unless this flag is present. Without it,
+    // description-based discovery silently degrades to title-only matching.
+    apiUrl.searchParams.set('content', 'true');
 
     try {
-      const data = await fetchAtsJson('Greenhouse', apiUrl) as {
+      const data = await fetchAtsJson('Greenhouse', apiUrl.toString()) as {
         jobs?: Array<{
           title: string;
           absolute_url: string;
           location: { name: string };
-           updated_at: string;
-           content?: string;
+          updated_at: string;
+          content?: string;
+          company_name?: string;
         }>;
       };
 
@@ -636,12 +715,12 @@ async function searchGreenhouse(
         const jobLocation = job.location?.name || 'Unknown';
         const mode = inferWorkMode(jobLocation);
         const titleMatch = jobQueryMatchRank(job.title, job.content ?? '', normalizeDiscoveryQuery(query)) !== null;
-        const locMatch = onsiteLocationMatches(jobLocation, location);
+        const locMatch = atsLocationMatches([jobLocation], location, mode);
 
         if (titleMatch && locMatch && workModeMatches(mode, workMode) && isHttpUrl(job.absolute_url)) {
           results.push({
             title: job.title,
-            company,
+            company: job.company_name || company,
             location: jobLocation,
             url: job.absolute_url,
             source: 'greenhouse',
@@ -687,33 +766,60 @@ async function searchLever(
   for (const company of companies) {
     if (results.length >= maxResults) break;
 
-    const apiUrl = `https://api.lever.co/v0/postings/${encodeURIComponent(company)}`;
-
     try {
-      const data = await fetchAtsJson('Lever', apiUrl) as Array<{
+      const endpoints = [
+        `https://api.lever.co/v0/postings/${encodeURIComponent(company)}`,
+        `https://api.eu.lever.co/v0/postings/${encodeURIComponent(company)}`,
+      ];
+      let rawData: unknown;
+      let notFoundError: DiscoverySourceError | undefined;
+      for (const endpoint of endpoints) {
+        try {
+          rawData = await fetchAtsJson('Lever', endpoint);
+          break;
+        } catch (error) {
+          if (error instanceof DiscoverySourceError && error.httpStatus === 404) {
+            notFoundError = error;
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (rawData === undefined) {
+        throw notFoundError ?? new DiscoverySourceError('Lever board was not found', 404);
+      }
+      if (!Array.isArray(rawData)) {
+        throw new DiscoverySourceError('Lever returned an invalid postings payload');
+      }
+      const data = rawData as Array<{
         text: string;
-        host: string;
-        url: string;
-        categories: { location?: string };
+        host?: string;
+        url?: string;
+        hostedUrl?: string;
+        applyUrl?: string;
+        workplaceType?: string;
+        categories?: { location?: string; allLocations?: string[] };
         createdAt: number;
         descriptionPlain?: string;
       }>;
 
-      const jobs = Array.isArray(data) ? data : [];
-      for (const job of jobs) {
+      for (const job of data) {
         if (results.length >= maxResults) break;
 
         const titleMatch = jobQueryMatchRank(job.text, job.descriptionPlain ?? '', normalizeDiscoveryQuery(query)) !== null;
         const jobLocation = job.categories?.location || '';
-        const mode = inferWorkMode(jobLocation || 'Unknown');
-        const locMatch = onsiteLocationMatches(jobLocation, location);
-        const jobUrl = job.url || job.host;
+        const jobLocations = [jobLocation, ...(job.categories?.allLocations ?? [])]
+          .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
+        const displayLocation = jobLocations.join(' · ') || 'Unknown';
+        const mode = explicitWorkMode(job.workplaceType, displayLocation);
+        const locMatch = atsLocationMatches(jobLocations, location, mode);
+        const jobUrl = job.hostedUrl || job.url || job.host;
 
-        if (titleMatch && locMatch && workModeMatches(mode, workMode) && isHttpUrl(jobUrl)) {
+        if (titleMatch && locMatch && workModeMatches(mode, workMode) && jobUrl && isHttpUrl(jobUrl)) {
           results.push({
             title: job.text,
             company,
-            location: jobLocation || 'Unknown',
+            location: displayLocation,
             url: jobUrl,
             source: 'lever',
             workMode: mode,
@@ -737,8 +843,8 @@ async function searchLever(
 /**
  * Search an Ashby job board. Requires a board name (company slug).
  *
- * API: POST https://jobs.ashbyhq.com/api/nonuser/{board}
- * Returns job listings (public, minimal auth).
+ * API: GET https://api.ashbyhq.com/posting-api/job-board/{board}
+ * Returns all published listings for the public board.
  */
 async function searchAshby(
   query: string,
@@ -758,43 +864,47 @@ async function searchAshby(
   for (const company of companies) {
     if (results.length >= maxResults) break;
 
-    const apiUrl = `https://jobs.ashbyhq.com/api/nonuser/${encodeURIComponent(company)}`;
+    const apiUrl = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(company)}`;
 
     try {
-      const data = await fetchAtsJson('Ashby', apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query,
-          location: location || '',
-          includeDepartmentRestricted: true,
-        }),
-      }) as {
+      const data = await fetchAtsJson('Ashby', apiUrl) as {
         jobs?: Array<{
           title: string;
           location: string;
           jobUrl: string;
           publishedAt: string;
-          department: string;
+          department?: string;
           descriptionHtml?: string;
+          descriptionPlain?: string;
+          isListed?: boolean;
+          isRemote?: boolean;
+          workplaceType?: string;
+          secondaryLocations?: Array<{ location?: string }>;
         }>;
-        total: number;
+        apiVersion?: string;
       };
 
       const jobs = data.jobs || [];
       for (const job of jobs) {
         if (results.length >= maxResults) break;
+        if (job.isListed === false) continue;
         const jobLocation = job.location || 'Unknown';
-        const mode = inferWorkMode(jobLocation);
-        if (jobQueryMatchRank(job.title, job.descriptionHtml ?? '', normalizeDiscoveryQuery(query)) === null) continue;
-        if (!onsiteLocationMatches(jobLocation, location)) continue;
+        const jobLocations = [
+          jobLocation,
+          ...(job.secondaryLocations ?? []).map(item => item.location ?? ''),
+        ].filter((value, index, values) => Boolean(value) && values.indexOf(value) === index);
+        const displayLocation = jobLocations.join(' · ') || 'Unknown';
+        const mode = job.isRemote === true
+          ? 'remote'
+          : explicitWorkMode(job.workplaceType, jobLocation);
+        const description = job.descriptionPlain ?? job.descriptionHtml ?? '';
+        if (jobQueryMatchRank(job.title, description, normalizeDiscoveryQuery(query)) === null) continue;
+        if (!atsLocationMatches(jobLocations, location, mode)) continue;
         if (!workModeMatches(mode, workMode) || !isHttpUrl(job.jobUrl)) continue;
         results.push({
           title: job.title,
-          company: job.department || company,
-          location: jobLocation,
+          company,
+          location: displayLocation,
           url: job.jobUrl,
           source: 'ashby',
           workMode: mode,
@@ -851,11 +961,24 @@ export async function discoverJobsDetailed(opts: DiscoverOptions): Promise<Disco
   const sources = opts.sources && opts.sources.length > 0
     ? [...new Set(opts.sources)]
     : [...DEFAULT_SOURCES, ...COMPANY_SOURCES];
-  const { company } = opts;
+  const invalidSourceIndex = sources.findIndex(source => !ALL_DISCOVERY_SOURCES.includes(source));
+  if (invalidSourceIndex >= 0) {
+    throw new Error(`Unknown discovery source: ${String(sources[invalidSourceIndex])}`);
+  }
+  const company = opts.company?.trim() || undefined;
   const location = normalizeDiscoveryLocation(opts.location);
   const workMode = opts.workMode ?? 'any';
   const searchDepth = opts.searchDepth ?? 'quick';
+  if (!['any', 'remote', 'onsite'].includes(workMode)) {
+    throw new Error(`Unknown work mode: ${String(workMode)}`);
+  }
+  if (!['quick', 'deep'].includes(searchDepth)) {
+    throw new Error(`Unknown search depth: ${String(searchDepth)}`);
+  }
   const maxResults = opts.maxResults ?? (searchDepth === 'deep' ? DEEP_MAX_RESULTS : DEFAULT_MAX_RESULTS);
+  if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > DEEP_MAX_RESULTS) {
+    throw new Error(`maxResults must be an integer from 1 to ${DEEP_MAX_RESULTS}.`);
+  }
 
   if (searchDepth === 'deep' && sources.includes('themuse') && !location) {
     throw new Error('Deep search requires a work location when The Muse is enabled.');
@@ -930,7 +1053,7 @@ export async function discoverJobsDetailed(opts: DiscoverOptions): Promise<Disco
     for (const sourceResult of sourceResults) {
       const result = sourceResult.results[index];
       if (!result) continue;
-      const normalized = result.url.split('?')[0]!.toLowerCase();
+      const normalized = discoveryUrlKey(result.url);
       if (!seen.has(normalized)) {
         seen.add(normalized);
         allResults.push(result);

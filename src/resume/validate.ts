@@ -13,6 +13,8 @@ import type {
 export interface TruthValidationOptions {
   /** Requirements extracted from the immutable job snapshot, when available. */
   requirements?: readonly JobRequirement[];
+  /** New model output must preserve verified JD spans; legacy revisions may omit them. */
+  requireRequirementSourceSpans?: boolean;
 }
 
 function issue(
@@ -72,6 +74,11 @@ function linkedClaims(
     result.push(source);
   });
   return result;
+}
+
+function sameStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function findProvenance(
@@ -280,6 +287,11 @@ export function validateResume(
         requirement.text !== frozen.text
         || requirement.kind !== frozen.kind
         || requirement.priority !== frozen.priority
+        || (requirement.sourceSpans !== undefined
+          && !sameStrings(requirement.sourceSpans, frozen.sourceSpans))
+        || (options.requireRequirementSourceSpans === true
+          && frozen.sourceSpans !== undefined
+          && requirement.sourceSpans === undefined)
       ) {
         issue(
           issues,

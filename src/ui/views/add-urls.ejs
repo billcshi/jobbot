@@ -261,7 +261,8 @@
     const searchDepth = document.getElementById('discover-depth').value;
     const company = document.getElementById('discover-company').value.trim();
     const source = document.getElementById('discover-source').value;
-    if (searchDepth === 'deep' && !location && (!source || source === 'themuse')) {
+    const unrestrictedLocation = !location || /^(remote|anywhere|any)$/i.test(location);
+    if (searchDepth === 'deep' && unrestrictedLocation && (!source || source === 'themuse')) {
       alert(discoverErrorMessage('DISCOVER_LOCATION_REQUIRED'));
       return;
     }
