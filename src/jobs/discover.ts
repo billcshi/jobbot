@@ -412,8 +412,10 @@ function atsLocationMatches(
   mode: DiscoverResult['workMode'],
 ): boolean {
   const locations = jobLocations.map(value => value.trim()).filter(Boolean);
+  if (!requestedLocation) return true;
   return mode === 'remote'
     ? remoteLocationMatches(locations.join(' · '), requestedLocation)
+      || locations.some(value => onsiteLocationMatches(value, requestedLocation))
     : locations.some(value => onsiteLocationMatches(value, requestedLocation));
 }
 

@@ -555,6 +555,24 @@ describe('job discovery', () => {
     }));
   });
 
+  it('keeps a location-less Lever posting when location is unrestricted', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([{
+      text: 'Backend Engineer',
+      hostedUrl: 'https://jobs.lever.co/acme/no-location',
+      workplaceType: 'unspecified',
+      createdAt: 1_787_529_600_000,
+    }])));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', company: 'acme', sources: ['lever'], workMode: 'any',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      url: 'https://jobs.lever.co/acme/no-location',
+      location: 'Unknown',
+    }));
+  });
+
   it('falls back to the Lever EU postings endpoint after a global 404', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const hostname = new URL(String(input)).hostname;
@@ -624,6 +642,28 @@ describe('job discovery', () => {
 
     expect(discovery.results[0]).toEqual(expect.objectContaining({
       location: 'New York · Seattle',
+    }));
+  });
+
+  it('matches an Ashby remote secondary location using a canonical city alias', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [{
+      title: 'Backend Engineer',
+      location: 'Houston',
+      secondaryLocations: [{ location: 'San Francisco' }],
+      workplaceType: 'Remote',
+      isRemote: true,
+      isListed: true,
+      jobUrl: 'https://jobs.ashbyhq.com/acme/remote-multi-location',
+      descriptionPlain: 'Build backend systems.',
+    }] })));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', location: 'San Francisco', company: 'acme',
+      sources: ['ashby'], workMode: 'remote',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      location: 'Houston · San Francisco',
     }));
   });
 
