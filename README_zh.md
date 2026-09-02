@@ -106,6 +106,28 @@ API 密钥只能保存在 `local/config.yaml` 中；`local/` 已被 gitignore。
 - 本地视觉审核会绑定准确的职位 ID、简历版本 ID 和 PDF SHA-256；重新生成或修改 PDF 后，旧审核自动失效。
 - 上述 AI 阶段会把候选人资料事实和职位描述发送给 DeepSeek；渲染后的简历页面图片会发送给配置的 Anthropic 或 OpenAI 视觉服务。Prompt/调试日志以明文保存在已被 gitignore 的 `local/` 目录中，请把该目录视为敏感数据。
 
+实际检查渲染后的 PDF 后，本地审核者可按以下结构创建
+`local/resumes/<job-id>/visual-review.json`：
+
+```json
+{
+  "schema_version": 1,
+  "job_id": 123,
+  "resume_version_id": 456,
+  "resume_sha256": "规范 PDF artifact 中的准确 SHA-256",
+  "status": "passed",
+  "reviewer_type": "human",
+  "reviewer": "审核者姓名",
+  "score": 90,
+  "summary": "已检查渲染后的 PDF，未发现文字截断或布局问题。",
+  "issues": []
+}
+```
+
+`reviewer_type` 只能是 `human` 或 `agent`。如果存在问题，`severity` 只能是
+`high`、`medium` 或 `low`，`category` 只能是 `accuracy`、`formatting`、
+`keywords`、`layout`、`visual` 或 `content`。
+
 ## 重要：个人数据与项目代码分离
 
 本仓库设计为**可以安全地分享到 GitHub**。你的个人数据存放在 `local/` 目录中——该目录**已被 gitignore，永远不会被提交**。

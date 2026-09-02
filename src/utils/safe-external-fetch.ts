@@ -7,6 +7,12 @@ import { parseHttpUrl } from './url.js';
 
 const BLOCKED_IPV4 = new BlockList();
 const BLOCKED_IPV6 = new BlockList();
+const PUBLIC_IPV6 = new BlockList();
+
+// IANA currently allocates ordinary global-unicast IPv6 addresses from
+// 2000::/3. Treat every other IPv6 range as non-public by default instead of
+// trying to enumerate an ever-growing collection of reserved/local prefixes.
+PUBLIC_IPV6.addSubnet('2000::', 3, 'ipv6');
 
 for (const [network, prefix] of [
   ['0.0.0.0', 8],
@@ -44,6 +50,8 @@ for (const [network, prefix] of [
   ['5f00::', 16],
   ['fc00::', 7],
   ['fe80::', 10],
+  // Deprecated site-local space may still be present in existing networks.
+  ['fec0::', 10],
   ['ff00::', 8],
 ] as const) {
   BLOCKED_IPV6.addSubnet(network, prefix, 'ipv6');
@@ -82,7 +90,9 @@ function normalizedHostname(hostname: string): string {
 export function isPublicIpAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return !BLOCKED_IPV4.check(address, 'ipv4');
-  if (family === 6) return !BLOCKED_IPV6.check(address, 'ipv6');
+  if (family === 6) {
+    return PUBLIC_IPV6.check(address, 'ipv6') && !BLOCKED_IPV6.check(address, 'ipv6');
+  }
   return false;
 }
 

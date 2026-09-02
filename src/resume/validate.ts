@@ -74,6 +74,11 @@ function linkedClaims(
   return result;
 }
 
+function sameStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function findProvenance(
   claim: string,
   provenance: readonly TailoredClaimProvenance[],
@@ -280,6 +285,7 @@ export function validateResume(
         requirement.text !== frozen.text
         || requirement.kind !== frozen.kind
         || requirement.priority !== frozen.priority
+        || !sameStrings(requirement.sourceSpans, frozen.sourceSpans)
       ) {
         issue(
           issues,

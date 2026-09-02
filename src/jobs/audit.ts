@@ -163,7 +163,9 @@ export function parseAuditModelOutput(value: unknown): {
       || root['score'] < 0 || root['score'] > 100) {
     throw new Error('Audit output score must be a number from 0 to 100');
   }
-  if (typeof root['summary'] !== 'string') throw new Error('Audit output summary must be a string');
+  if (typeof root['summary'] !== 'string' || root['summary'].trim().length === 0) {
+    throw new Error('Audit output summary must be a non-empty string');
+  }
   const issues = root['issues'].map((raw, index) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new Error(`Audit issue ${index} must be an object`);
@@ -689,6 +691,17 @@ export async function auditJob(jobId: number, signal?: AbortSignal, userId = get
   }
   rethrowIfAborted(undefined, signal);
   console.log(`--- Page Count: ${pages} page(s) ---`);
+  if (pages < 1) {
+    return {
+      success: false,
+      jobId,
+      contentIssues: [],
+      visualIssues: [],
+      overallScore: 0,
+      summary: '',
+      error: 'Page-count validation failed: PDF contains no pages',
+    };
+  }
   if (pages > 1) {
     console.log(`  ✕ FAILED: Resume is ${pages} pages — must be exactly 1 page.`);
 

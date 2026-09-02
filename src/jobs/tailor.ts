@@ -459,68 +459,68 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
       logger.warn(`Repairing semantically unsupported claims for job ${jobId}`);
       const semanticRepairStartMs = Date.now();
       try {
-      const semanticRepairRequest = await requestAiJson<{
-        choices: [{ message: { content?: string } }];
-        usage?: Record<string, number>;
-      }>(DEEPSEEK_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: getDeepseekModel(),
-          messages: [
-            {
-              role: 'system',
-              content: [
-                systemPrompt,
-                '',
-                'You are repairing resume claims rejected by an independent semantic entailment gate.',
-                'Return the complete corrected JSON object only.',
-                'Remove or rewrite every rejected assertion using only its linked source text.',
-                'Update the exact matching claim_provenance entry whenever a summary or highlight changes.',
-                'Do not add facts, implications, adjectives, scope, role labels, or metrics absent from linked sources.',
-              ].join('\n'),
-            },
-            {
-              role: 'user',
-              content: [
-                '## Rejected claims and reasons',
-                JSON.stringify(failedAssessments, null, 2),
-                '',
-                '## Resume response to repair',
-                JSON.stringify(llmOutput, null, 2),
-                '',
-                '## Frozen requirements (must remain exact)',
-                JSON.stringify(frozenRequirements, null, 2),
-                '',
-                '## Authoritative candidate evidence',
-                JSON.stringify(evidencePromptContext(candidateEvidence), null, 2),
-              ].join('\n'),
-            },
-          ],
-          max_tokens: 16384,
-          thinking: getDeepseekThinking('customize'),
-        }),
-      }, { signal, label: 'DeepSeek semantic repair' });
-      const semanticRepairData = semanticRepairRequest.data;
-      const semanticRepairContent = semanticRepairData.choices[0]?.message?.content;
-      if (!semanticRepairContent) throw new Error('Empty response from DeepSeek semantic repair');
-      llmOutput = validateOutput(parseLLMJson(semanticRepairContent, `semantic repair tailor job #${jobId}`));
-      semanticValidation = await validateSemanticEntailment(candidateProfile, llmOutput, {
-        apiKey,
-        signal,
-      });
-      throwIfAborted(signal);
-      logAiCall({
-        operation: 'customize-semantic-repair', model: getDeepseekModel(), provider: 'deepseek',
-        endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair semantic claims for job #${jobId}`,
-        responseSummary: semanticValidation.valid ? 'Semantic repair validated' : 'Semantic repair remained invalid',
-        ...extractUsage(semanticRepairData as Record<string, unknown>),
-        durationMs: semanticRepairRequest.durationMs, success: semanticValidation.valid,
-        error: semanticValidation.valid ? undefined : 'Semantic entailment validation failed after repair',
-      });
+        const semanticRepairRequest = await requestAiJson<{
+          choices: [{ message: { content?: string } }];
+          usage?: Record<string, number>;
+        }>(DEEPSEEK_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: getDeepseekModel(),
+            messages: [
+              {
+                role: 'system',
+                content: [
+                  systemPrompt,
+                  '',
+                  'You are repairing resume claims rejected by an independent semantic entailment gate.',
+                  'Return the complete corrected JSON object only.',
+                  'Remove or rewrite every rejected assertion using only its linked source text.',
+                  'Update the exact matching claim_provenance entry whenever a summary or highlight changes.',
+                  'Do not add facts, implications, adjectives, scope, role labels, or metrics absent from linked sources.',
+                ].join('\n'),
+              },
+              {
+                role: 'user',
+                content: [
+                  '## Rejected claims and reasons',
+                  JSON.stringify(failedAssessments, null, 2),
+                  '',
+                  '## Resume response to repair',
+                  JSON.stringify(llmOutput, null, 2),
+                  '',
+                  '## Frozen requirements (must remain exact)',
+                  JSON.stringify(frozenRequirements, null, 2),
+                  '',
+                  '## Authoritative candidate evidence',
+                  JSON.stringify(evidencePromptContext(candidateEvidence), null, 2),
+                ].join('\n'),
+              },
+            ],
+            max_tokens: 16384,
+            thinking: getDeepseekThinking('customize'),
+          }),
+        }, { signal, label: 'DeepSeek semantic repair' });
+        const semanticRepairData = semanticRepairRequest.data;
+        const semanticRepairContent = semanticRepairData.choices[0]?.message?.content;
+        if (!semanticRepairContent) throw new Error('Empty response from DeepSeek semantic repair');
+        llmOutput = validateOutput(parseLLMJson(semanticRepairContent, `semantic repair tailor job #${jobId}`));
+        semanticValidation = await validateSemanticEntailment(candidateProfile, llmOutput, {
+          apiKey,
+          signal,
+        });
+        throwIfAborted(signal);
+        logAiCall({
+          operation: 'customize-semantic-repair', model: getDeepseekModel(), provider: 'deepseek',
+          endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair semantic claims for job #${jobId}`,
+          responseSummary: semanticValidation.valid ? 'Semantic repair validated' : 'Semantic repair remained invalid',
+          ...extractUsage(semanticRepairData as Record<string, unknown>),
+          durationMs: semanticRepairRequest.durationMs, success: semanticValidation.valid,
+          error: semanticValidation.valid ? undefined : 'Semantic entailment validation failed after repair',
+        });
       } catch (repairError) {
         const message = repairError instanceof Error ? repairError.message : String(repairError);
         logAiCall({

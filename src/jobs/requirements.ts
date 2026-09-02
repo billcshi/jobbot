@@ -13,6 +13,7 @@ export interface RequirementDraft {
   text: string;
   kind?: RequirementKind;
   priority?: RequirementPriority;
+  sourceSpans?: string[];
 }
 
 export interface StoredRequirement {
@@ -159,11 +160,15 @@ export function createJobRequirements(drafts: readonly RequirementDraft[]): JobR
     if (text.length === 0) return;
     const id = requirementId(text);
     if (byId.has(id)) return;
+    const sourceSpans = draft.sourceSpans
+      ? [...new Set(draft.sourceSpans.map(normalizedText).filter(Boolean))]
+      : undefined;
     byId.set(id, {
       id,
       text,
       kind: draft.kind ?? 'other',
       priority: draft.priority ?? 'required',
+      ...(sourceSpans && sourceSpans.length > 0 ? { sourceSpans } : {}),
     });
   });
   return [...byId.values()];

@@ -35,6 +35,28 @@ describe('job discovery', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('rejects unknown sources and unsafe result limits before fetching', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['unknown' as never],
+    })).rejects.toThrow('Unknown discovery source');
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['jobicy'], maxResults: 0,
+    })).rejects.toThrow('maxResults must be an integer from 1 to 100');
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['jobicy'], maxResults: 101,
+    })).rejects.toThrow('maxResults must be an integer from 1 to 100');
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['jobicy'], workMode: 'invalid' as 'remote',
+    })).rejects.toThrow('Unknown work mode');
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['jobicy'], searchDepth: 'invalid' as 'quick',
+    })).rejects.toThrow('Unknown search depth');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('normalizes supported English locations and unrestricted values', () => {
     expect(normalizeDiscoveryLocation('Remote')).toBeUndefined();
     expect(normalizeDiscoveryLocation('Anywhere')).toBeUndefined();
@@ -250,7 +272,7 @@ describe('job discovery', () => {
     expect(discovery.results.map(result => result.title)).toEqual(['Agent Runtime & Systems Engineer']);
   });
 
-  it('passes a canonical city alias to The Muse and keeps only that city', async () => {
+  it('keeps The Muse remote matches selected by its upstream location filter', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
       expect(url.searchParams.get('location')).toBe('Seattle, WA');
@@ -276,9 +298,9 @@ describe('job discovery', () => {
       sources: ['themuse'],
     });
 
-    expect(discovery.results).toHaveLength(1);
-    expect(discovery.results[0]?.company).toBe('Seattle Company');
-    expect(discovery.results[0]?.location).toBe('Seattle, WA');
+    expect(discovery.results.map(result => result.company)).toEqual([
+      'Seattle Company', 'Remote Company',
+    ]);
   });
 
   it('searches deep The Muse pages up to the discovery cap', async () => {
@@ -341,6 +363,12 @@ describe('job discovery', () => {
       sources: ['themuse'],
       searchDepth: 'deep',
     })).rejects.toThrow('Deep search requires a work location');
+    await expect(discoverJobsDetailed({
+      query: 'backend engineer',
+      location: 'Remote',
+      sources: ['themuse'],
+      searchDepth: 'deep',
+    })).rejects.toThrow('Deep search requires a work location');
   });
 
   it('uses The Muse descriptions to find backend work under generic titles', async () => {
@@ -383,6 +411,31 @@ describe('job discovery', () => {
     expect(discovery.results.map(result => result.company)).toEqual(['Backend Platform Company']);
   });
 
+  it('does not let unrelated titles match only because role words appear in descriptions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [
+      {
+        title: 'Senior Product Designer',
+        company_name: 'Design Company',
+        candidate_required_location: 'Worldwide',
+        description: 'Partner closely with the engineering manager on product quality.',
+        url: 'https://example.com/product-designer',
+      },
+      {
+        title: 'Staff Design Engineer',
+        company_name: 'Design Company',
+        candidate_required_location: 'Worldwide',
+        description: 'Partner with the engineering manager on cross-functional work.',
+        url: 'https://example.com/staff-design-engineer',
+      },
+    ] })));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'engineering manager', sources: ['remotive'],
+    });
+
+    expect(discovery.results).toEqual([]);
+  });
+
   it('explains why LinkedIn automation is unavailable', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -410,12 +463,15 @@ describe('job discovery', () => {
   });
 
   it('matches a canonical city against a shorter ATS location', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [{
-      title: 'Backend Engineer',
-      absolute_url: 'https://boards.greenhouse.io/acme/jobs/1',
-      location: { name: 'Seattle' },
-      updated_at: '2026-08-25',
-    }] })));
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      expect(new URL(String(input)).searchParams.get('content')).toBe('true');
+      return jsonResponse({ jobs: [{
+        title: 'Backend Engineer',
+        absolute_url: 'https://boards.greenhouse.io/acme/jobs/1',
+        location: { name: 'Seattle' },
+        updated_at: '2026-08-25',
+      }] });
+    }));
 
     const discovery = await discoverJobsDetailed({
       query: 'backend', location: 'Seattle', company: 'acme', sources: ['greenhouse'],
@@ -423,6 +479,103 @@ describe('job discovery', () => {
 
     expect(discovery.results).toHaveLength(1);
     expect(discovery.diagnostics[0]).toEqual(expect.objectContaining({ status: 'ok' }));
+  });
+
+  it('requests Greenhouse content so generic titles can match descriptions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      expect(new URL(String(input)).searchParams.get('content')).toBe('true');
+      return jsonResponse({ jobs: [{
+        title: 'Software Engineer II',
+        content: 'Build backend APIs and distributed services.',
+        absolute_url: 'https://boards.greenhouse.io/acme/jobs/description-match',
+        location: { name: 'Seattle, WA' },
+        updated_at: '2026-08-25',
+        company_name: 'Acme Incorporated',
+      }] });
+    }));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend engineer', location: 'Seattle', company: 'acme', sources: ['greenhouse'],
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      title: 'Software Engineer II', company: 'Acme Incorporated',
+    }));
+  });
+
+  it('parses the current Lever postings schema and explicit work mode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      expect(new URL(String(input)).hostname).toBe('api.lever.co');
+      return jsonResponse([{
+        text: 'Software Engineer II',
+        hostedUrl: 'https://jobs.lever.co/acme/current-schema',
+        applyUrl: 'https://jobs.lever.co/acme/current-schema/apply',
+        workplaceType: 'remote',
+        categories: { location: 'Remote - United States', allLocations: ['United States'] },
+        createdAt: 1_787_529_600_000,
+        descriptionPlain: 'Build backend APIs and distributed services.',
+      }]);
+    }));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend engineer', location: 'Seattle', company: 'acme',
+      sources: ['lever'], workMode: 'remote',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      url: 'https://jobs.lever.co/acme/current-schema', workMode: 'remote', company: 'acme',
+    }));
+  });
+
+  it('falls back to the Lever EU postings endpoint after a global 404', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const hostname = new URL(String(input)).hostname;
+      if (hostname === 'api.lever.co') return new Response('missing', { status: 404 });
+      return jsonResponse([{
+        text: 'Backend Engineer',
+        hostedUrl: 'https://jobs.eu.lever.co/acme-eu/role',
+        workplaceType: 'on-site',
+        categories: { location: 'Berlin, Germany' },
+        createdAt: 1_787_529_600_000,
+      }]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', location: 'Berlin', company: 'acme-eu', sources: ['lever'],
+    });
+
+    expect(discovery.results[0]?.url).toBe('https://jobs.eu.lever.co/acme-eu/role');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the documented Ashby endpoint and keeps the board as company', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.href).toBe('https://api.ashbyhq.com/posting-api/job-board/acme');
+      expect(init?.method).toBeUndefined();
+      return jsonResponse({ apiVersion: '1', jobs: [{
+        title: 'Software Engineer II',
+        department: 'Engineering',
+        location: 'Remote - European Union',
+        secondaryLocations: [{ location: 'Berlin' }],
+        workplaceType: 'Remote',
+        isRemote: true,
+        isListed: true,
+        jobUrl: 'https://jobs.ashbyhq.com/acme/role',
+        publishedAt: '2026-08-25',
+        descriptionPlain: 'Build backend APIs and distributed services.',
+      }] });
+    }));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend engineer', location: 'Berlin', company: 'acme',
+      sources: ['ashby'], workMode: 'remote',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      company: 'acme', url: 'https://jobs.ashbyhq.com/acme/role', workMode: 'remote',
+    }));
   });
 
   it('reports ATS outages and malformed responses instead of empty results', async () => {
@@ -562,6 +715,25 @@ describe('job discovery', () => {
     expect(result.results.map(job => job.source)).toEqual([
       'themuse', 'jobicy', 'remotive', 'themuse', 'themuse',
     ]);
+  });
+
+  it('does not conflate case-sensitive paths or distinct query-based job IDs', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [
+      {
+        jobTitle: 'Backend Engineer', companyName: 'Upper', jobGeo: 'Worldwide',
+        url: 'https://jobs.example.com/Role?id=ABC',
+      },
+      {
+        jobTitle: 'Backend Engineer', companyName: 'Lower', jobGeo: 'Worldwide',
+        url: 'https://jobs.example.com/role?id=abc',
+      },
+    ] })));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', sources: ['jobicy'],
+    });
+
+    expect(discovery.results.map(result => result.company)).toEqual(['Upper', 'Lower']);
   });
 
   it('enforces remote work mode for company ATS sources', async () => {
