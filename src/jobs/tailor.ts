@@ -353,6 +353,7 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
       const output = normalizeSummaryProvenance(parseProvenancedTailoredResumeData(value));
       const truthValidation = validateResume(candidateProfile, output, {
         requirements: frozenRequirements,
+        requireRequirementSourceSpans: true,
       });
       if (!truthValidation.valid) {
         const details = truthValidation.issues

@@ -43,6 +43,12 @@ describe('job discovery', () => {
       query: 'backend', sources: ['unknown' as never],
     })).rejects.toThrow('Unknown discovery source');
     await expect(discoverJobsDetailed({
+      query: 'backend', sources: ['' as never],
+    })).rejects.toThrow('Unknown discovery source');
+    await expect(discoverJobsDetailed({
+      query: 'backend', sources: [undefined as never],
+    })).rejects.toThrow('Unknown discovery source');
+    await expect(discoverJobsDetailed({
       query: 'backend', sources: ['jobicy'], maxResults: 0,
     })).rejects.toThrow('maxResults must be an integer from 1 to 100');
     await expect(discoverJobsDetailed({
@@ -527,6 +533,28 @@ describe('job discovery', () => {
     }));
   });
 
+  it('matches and displays a Lever secondary onsite location', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([{
+      text: 'Backend Engineer',
+      hostedUrl: 'https://jobs.lever.co/acme/multi-location',
+      workplaceType: 'on-site',
+      categories: {
+        location: 'San Francisco',
+        allLocations: ['San Francisco', 'Seattle'],
+      },
+      createdAt: 1_787_529_600_000,
+    }])));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', location: 'Seattle', company: 'acme',
+      sources: ['lever'], workMode: 'onsite',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      location: 'San Francisco · Seattle',
+    }));
+  });
+
   it('falls back to the Lever EU postings endpoint after a global 404', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const hostname = new URL(String(input)).hostname;
@@ -575,6 +603,27 @@ describe('job discovery', () => {
 
     expect(discovery.results[0]).toEqual(expect.objectContaining({
       company: 'acme', url: 'https://jobs.ashbyhq.com/acme/role', workMode: 'remote',
+    }));
+  });
+
+  it('matches and displays an Ashby secondary onsite location', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ jobs: [{
+      title: 'Backend Engineer',
+      location: 'New York',
+      secondaryLocations: [{ location: 'Seattle' }],
+      workplaceType: 'On-site',
+      isListed: true,
+      jobUrl: 'https://jobs.ashbyhq.com/acme/multi-location',
+      descriptionPlain: 'Build backend systems.',
+    }] })));
+
+    const discovery = await discoverJobsDetailed({
+      query: 'backend', location: 'Seattle', company: 'acme',
+      sources: ['ashby'], workMode: 'onsite',
+    });
+
+    expect(discovery.results[0]).toEqual(expect.objectContaining({
+      location: 'New York · Seattle',
     }));
   });
 

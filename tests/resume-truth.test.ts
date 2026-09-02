@@ -357,8 +357,22 @@ describe('resume truth validation', () => {
     const frozen = structuredClone(output.job_requirements);
     frozen[0]!.sourceSpans = ['Build reliable TypeScript services'];
 
-    const result = validateResume(PROFILE, output, { requirements: frozen });
+    const result = validateResume(PROFILE, output, {
+      requirements: frozen,
+      requireRequirementSourceSpans: true,
+    });
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'requirement_mismatch' }));
+  });
+
+  it('allows a legacy bound resume to omit source spans while still checking core fields', () => {
+    const output = validResume();
+    const frozen = structuredClone(output.job_requirements);
+    frozen[0]!.sourceSpans = ['Build reliable TypeScript services'];
+
+    expect(validateResume(PROFILE, output, { requirements: frozen })).toEqual({
+      valid: true,
+      issues: [],
+    });
   });
 });
 

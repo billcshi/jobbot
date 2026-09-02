@@ -13,6 +13,8 @@ import type {
 export interface TruthValidationOptions {
   /** Requirements extracted from the immutable job snapshot, when available. */
   requirements?: readonly JobRequirement[];
+  /** New model output must preserve verified JD spans; legacy revisions may omit them. */
+  requireRequirementSourceSpans?: boolean;
 }
 
 function issue(
@@ -285,7 +287,11 @@ export function validateResume(
         requirement.text !== frozen.text
         || requirement.kind !== frozen.kind
         || requirement.priority !== frozen.priority
-        || !sameStrings(requirement.sourceSpans, frozen.sourceSpans)
+        || (requirement.sourceSpans !== undefined
+          && !sameStrings(requirement.sourceSpans, frozen.sourceSpans))
+        || (options.requireRequirementSourceSpans === true
+          && frozen.sourceSpans !== undefined
+          && requirement.sourceSpans === undefined)
       ) {
         issue(
           issues,

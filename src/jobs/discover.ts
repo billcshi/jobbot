@@ -407,13 +407,14 @@ function explicitWorkMode(value: unknown, fallbackLocation: string): DiscoverRes
 }
 
 function atsLocationMatches(
-  jobLocation: string,
+  jobLocations: readonly string[],
   requestedLocation: string | undefined,
   mode: DiscoverResult['workMode'],
 ): boolean {
+  const locations = jobLocations.map(value => value.trim()).filter(Boolean);
   return mode === 'remote'
-    ? remoteLocationMatches(jobLocation, requestedLocation)
-    : onsiteLocationMatches(jobLocation, requestedLocation);
+    ? remoteLocationMatches(locations.join(' · '), requestedLocation)
+    : locations.some(value => onsiteLocationMatches(value, requestedLocation));
 }
 
 function discoveryUrlKey(value: string): string {
@@ -712,7 +713,7 @@ async function searchGreenhouse(
         const jobLocation = job.location?.name || 'Unknown';
         const mode = inferWorkMode(jobLocation);
         const titleMatch = jobQueryMatchRank(job.title, job.content ?? '', normalizeDiscoveryQuery(query)) !== null;
-        const locMatch = atsLocationMatches(jobLocation, location, mode);
+        const locMatch = atsLocationMatches([jobLocation], location, mode);
 
         if (titleMatch && locMatch && workModeMatches(mode, workMode) && isHttpUrl(job.absolute_url)) {
           results.push({
@@ -805,18 +806,18 @@ async function searchLever(
 
         const titleMatch = jobQueryMatchRank(job.text, job.descriptionPlain ?? '', normalizeDiscoveryQuery(query)) !== null;
         const jobLocation = job.categories?.location || '';
-        const allLocations = [jobLocation, ...(job.categories?.allLocations ?? [])]
+        const jobLocations = [jobLocation, ...(job.categories?.allLocations ?? [])]
           .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
-          .join(' · ');
-        const mode = explicitWorkMode(job.workplaceType, allLocations || 'Unknown');
-        const locMatch = atsLocationMatches(allLocations, location, mode);
+        const displayLocation = jobLocations.join(' · ') || 'Unknown';
+        const mode = explicitWorkMode(job.workplaceType, displayLocation);
+        const locMatch = atsLocationMatches(jobLocations, location, mode);
         const jobUrl = job.hostedUrl || job.url || job.host;
 
         if (titleMatch && locMatch && workModeMatches(mode, workMode) && jobUrl && isHttpUrl(jobUrl)) {
           results.push({
             title: job.text,
             company,
-            location: jobLocation || 'Unknown',
+            location: displayLocation,
             url: jobUrl,
             source: 'lever',
             workMode: mode,
@@ -886,21 +887,22 @@ async function searchAshby(
         if (results.length >= maxResults) break;
         if (job.isListed === false) continue;
         const jobLocation = job.location || 'Unknown';
-        const matchingLocations = [
+        const jobLocations = [
           jobLocation,
           ...(job.secondaryLocations ?? []).map(item => item.location ?? ''),
-        ].filter(Boolean).join(' · ');
+        ].filter((value, index, values) => Boolean(value) && values.indexOf(value) === index);
+        const displayLocation = jobLocations.join(' · ') || 'Unknown';
         const mode = job.isRemote === true
           ? 'remote'
           : explicitWorkMode(job.workplaceType, jobLocation);
         const description = job.descriptionPlain ?? job.descriptionHtml ?? '';
         if (jobQueryMatchRank(job.title, description, normalizeDiscoveryQuery(query)) === null) continue;
-        if (!atsLocationMatches(matchingLocations, location, mode)) continue;
+        if (!atsLocationMatches(jobLocations, location, mode)) continue;
         if (!workModeMatches(mode, workMode) || !isHttpUrl(job.jobUrl)) continue;
         results.push({
           title: job.title,
           company,
-          location: jobLocation,
+          location: displayLocation,
           url: job.jobUrl,
           source: 'ashby',
           workMode: mode,
@@ -957,8 +959,10 @@ export async function discoverJobsDetailed(opts: DiscoverOptions): Promise<Disco
   const sources = opts.sources && opts.sources.length > 0
     ? [...new Set(opts.sources)]
     : [...DEFAULT_SOURCES, ...COMPANY_SOURCES];
-  const invalidSource = sources.find(source => !ALL_DISCOVERY_SOURCES.includes(source));
-  if (invalidSource) throw new Error(`Unknown discovery source: ${String(invalidSource)}`);
+  const invalidSourceIndex = sources.findIndex(source => !ALL_DISCOVERY_SOURCES.includes(source));
+  if (invalidSourceIndex >= 0) {
+    throw new Error(`Unknown discovery source: ${String(sources[invalidSourceIndex])}`);
+  }
   const company = opts.company?.trim() || undefined;
   const location = normalizeDiscoveryLocation(opts.location);
   const workMode = opts.workMode ?? 'any';
