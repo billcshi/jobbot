@@ -7,6 +7,7 @@ import type {
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { extractUsage, logAiCall } from '../utils/ai-logger.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 export interface RequirementDraft {
   text: string;
@@ -48,6 +49,9 @@ function requirementId(text: string): string {
 }
 
 const NORMATIVE_LANGUAGE = /\b(must|required|requirement|qualification|responsibilit|you will|you'll|need(?:ed)? to|minimum|preferred|nice to have|experience (?:with|in)|proficien|ability to|degree|\d+\+? years?|work permit|authorized to work)\b/i;
+const REQUIREMENT_SECTION_HEADING = /^(?:requirements?|qualifications?|responsibilities|preferred (?:skills|qualifications)|what you(?:'ll| will)(?: be)? do(?:ing)?|what (?:you bring|we(?:'re| are) looking for)|who you are)$/i;
+const NON_REQUIREMENT_SECTION_HEADING = /^(?:about us|view company profile|why you(?:'ll| will) love working here|what we offer|benefits|perks|equal opportunity|eeo(?:, salary and location)?|salary(?: and location)?|location)$/i;
+const JOB_BOARD_BOILERPLATE = /(?:want more jobs like this|delivered to your inbox|email address\*?|send me .* newsletters?|by signing up|terms of service|privacy policy|get jobs!?)/i;
 
 /** Deterministically identify JD spans that need an explicit coverage decision. */
 export function requirementCandidateSpans(jobDescription: string): string[] {
@@ -57,12 +61,18 @@ export function requirementCandidateSpans(jobDescription: string): string[] {
     const line = normalizedText(rawLine.replace(/^\s*[-*•]\s*/, ''));
     if (!line) continue;
     const heading = line.replace(/:$/, '');
-    if (/^(requirements?|qualifications?|responsibilities|what you(?:'ll| will) do|what we(?:'re| are) looking for)$/i.test(heading)) {
+    if (REQUIREMENT_SECTION_HEADING.test(heading)) {
       inRequirementSection = true;
       continue;
     }
+    if (NON_REQUIREMENT_SECTION_HEADING.test(heading)) {
+      inRequirementSection = false;
+      continue;
+    }
+    if (JOB_BOARD_BOILERPLATE.test(line)) continue;
     if (/^[A-Z][A-Za-z &/]{2,40}:$/.test(rawLine.trim()) && !NORMATIVE_LANGUAGE.test(line)) {
       inRequirementSection = false;
+      continue;
     }
     const sentences = line.split(/(?<=[.!?])\s+/).map(normalizedText);
     for (const sentence of sentences) {
@@ -210,6 +220,7 @@ export function parseRequirementDrafts(value: unknown): RequirementDraft[] {
 const REQUIREMENT_EXTRACTION_PROMPT = [
   'Extract explicit job requirements from the supplied posting.',
   'Do not evaluate a candidate and do not infer requirements absent from the posting.',
+  'The user message includes normative_spans_to_cover. Every supplied span must be represented by at least one extracted requirement that preserves its complete meaning.',
   'Return only JSON: {"requirements":[{"text":"...","kind":"responsibility|skill|experience|education|other","priority":"required|preferred"}]}.',
   'Preserve the posting meaning. Use required only for mandatory language; use preferred for optional or nice-to-have language.',
 ].join('\n');
@@ -235,75 +246,42 @@ export async function extractJobRequirements(
   const model = options.model ?? getDeepseekModel();
   const fetchImpl = options.fetchImpl ?? fetch;
   const thinking = getDeepseekThinking('extract');
+  const candidateSpans = requirementCandidateSpans(jobDescription);
+  if (candidateSpans.length === 0) {
+    throw new Error('No normative JD spans were identified; requirements cannot be frozen safely');
+  }
   const requestBody: Record<string, unknown> = {
     model,
     messages: [
       { role: 'system', content: REQUIREMENT_EXTRACTION_PROMPT },
-      { role: 'user', content: jobDescription.slice(0, 20_000) },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          job_description: jobDescription.slice(0, 20_000),
+          normative_spans_to_cover: candidateSpans,
+        }),
+      },
     ],
     max_tokens: 8192,
   };
   if (thinking) requestBody['thinking'] = thinking;
   const startMs = Date.now();
+  let extractionLogged = false;
 
   try {
-    const response = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
+    const extractionRequest = await requestAiJson<{
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
-      signal: options.signal,
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: Record<string, number>;
-    };
+    }, { signal: options.signal, label: 'DeepSeek requirement extraction', fetchImpl });
+    const data = extractionRequest.data;
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('Requirement extraction returned an empty response');
     const requirements = createJobRequirements(parseRequirementDrafts(parseLLMJson(content, 'requirements')));
     if (requirements.length === 0) throw new Error('Requirement extraction returned no usable requirements');
-    const candidateSpans = requirementCandidateSpans(jobDescription);
-    if (candidateSpans.length === 0) {
-      throw new Error('No normative JD spans were identified; requirements cannot be frozen safely');
-    }
-    const coverageResponse = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: REQUIREMENT_COVERAGE_PROMPT },
-          { role: 'user', content: JSON.stringify({ candidate_spans: candidateSpans, requirements }) },
-        ],
-        max_tokens: 8192,
-      }),
-      signal: options.signal,
-    });
-    if (!coverageResponse.ok) {
-      const body = await coverageResponse.text();
-      throw new Error(`Requirement coverage API error ${coverageResponse.status}: ${body.slice(0, 200)}`);
-    }
-    const coverageData = await coverageResponse.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const coverageContent = coverageData.choices?.[0]?.message?.content;
-    if (!coverageContent) throw new Error('Requirement coverage returned an empty response');
-    const coverage = validateRequirementCoverage(
-      candidateSpans,
-      requirements,
-      parseLLMJson(coverageContent, 'requirement-coverage'),
-    );
-    requirements.forEach((requirement) => {
-      requirement.sourceSpans = coverage
-        .filter((entry) => entry.requirement_ids.includes(requirement.id))
-        .map((entry) => entry.source_text);
-      if (requirement.sourceSpans.length === 0) {
-        throw new Error(`Extracted requirement ${requirement.id} has no independently verified JD source span`);
-      }
-    });
     logAiCall({
       operation: 'extract-requirements',
       model,
@@ -312,23 +290,88 @@ export async function extractJobRequirements(
       requestSummary: `Extract requirements from ${jobDescription.length} characters`,
       responseSummary: `${requirements.length} frozen requirements`,
       ...extractUsage(data as Record<string, unknown>),
-      durationMs: Date.now() - startMs,
+      durationMs: extractionRequest.durationMs,
       success: true,
+    });
+    extractionLogged = true;
+    const coverageRequestBody: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: 'system', content: REQUIREMENT_COVERAGE_PROMPT },
+        { role: 'user', content: JSON.stringify({ candidate_spans: candidateSpans, requirements }) },
+      ],
+      max_tokens: 8192,
+    };
+    if (thinking) coverageRequestBody['thinking'] = thinking;
+    const coverageStartMs = Date.now();
+    let coverage: RequirementCoverageEntry[];
+    try {
+      const coverageRequest = await requestAiJson<{
+        choices?: Array<{ message?: { content?: string } }>;
+        usage?: Record<string, number>;
+      }>('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(coverageRequestBody),
+      }, { signal: options.signal, label: 'DeepSeek requirement coverage', fetchImpl });
+      const coverageData = coverageRequest.data;
+      const coverageContent = coverageData.choices?.[0]?.message?.content;
+      if (!coverageContent) throw new Error('Requirement coverage returned an empty response');
+      coverage = validateRequirementCoverage(
+        candidateSpans,
+        requirements,
+        parseLLMJson(coverageContent, 'requirement-coverage'),
+      );
+      logAiCall({
+        operation: 'verify-requirement-coverage',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Verify coverage for ${candidateSpans.length} requirement spans`,
+        responseSummary: `${coverage.length}/${candidateSpans.length} spans covered`,
+        ...extractUsage(coverageData as Record<string, unknown>),
+        durationMs: coverageRequest.durationMs,
+        success: true,
+      });
+    } catch (coverageError) {
+      const message = coverageError instanceof Error ? coverageError.message : String(coverageError);
+      logAiCall({
+        operation: 'verify-requirement-coverage',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Verify coverage for ${candidateSpans.length} requirement spans`,
+        responseSummary: message,
+        durationMs: Date.now() - coverageStartMs,
+        success: false,
+        error: message,
+      });
+      throw coverageError;
+    }
+    requirements.forEach((requirement) => {
+      requirement.sourceSpans = coverage
+        .filter((entry) => entry.requirement_ids.includes(requirement.id))
+        .map((entry) => entry.source_text);
+      if (requirement.sourceSpans.length === 0) {
+        throw new Error(`Extracted requirement ${requirement.id} has no independently verified JD source span`);
+      }
     });
     return requirements;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logAiCall({
-      operation: 'extract-requirements',
-      model,
-      provider: 'deepseek',
-      endpoint: 'https://api.deepseek.com/v1/chat/completions',
-      requestSummary: `Extract requirements from ${jobDescription.length} characters`,
-      responseSummary: message,
-      durationMs: Date.now() - startMs,
-      success: false,
-      error: message,
-    });
+    if (!extractionLogged) {
+      logAiCall({
+        operation: 'extract-requirements',
+        model,
+        provider: 'deepseek',
+        endpoint: 'https://api.deepseek.com/v1/chat/completions',
+        requestSummary: `Extract requirements from ${jobDescription.length} characters`,
+        responseSummary: message,
+        durationMs: Date.now() - startMs,
+        success: false,
+        error: message,
+      });
+    }
     throw error;
   }
 }

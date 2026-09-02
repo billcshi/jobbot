@@ -1,0 +1,458 @@
+<script>
+(() => {
+  const STORAGE_KEY = 'jobbot-locale';
+  const ZH = Object.freeze({
+    'Dashboard': '仪表盘',
+    'Add URLs': '添加链接',
+    'Pipeline': '流水线',
+    'Events': '事件',
+    'Profile': '个人资料',
+    'AI Log': 'AI 日志',
+    'Log out': '退出登录',
+    'Job Pipeline': '职位流水线',
+    'total': '总计',
+    'job(s)': '个职位',
+    'entries': '条记录',
+    'input:': '输入：',
+    'output:': '输出：',
+    'cached:': '缓存：',
+    'Tier Distribution': '匹配等级分布',
+    'Pipeline Funnel': '流水线漏斗',
+    'Top Companies': '热门公司',
+    'Tier:': '等级：',
+    'Status:': '状态：',
+    'Applied:': '已申请：',
+    'Sort:': '排序：',
+    'All': '全部',
+    'All sources': '全部来源',
+    'New': '新建',
+    'Extracted': '已提取',
+    'Scored': '已评分',
+    'Composed': '已生成材料',
+    'Audited': '已审核',
+    'Audit Failed': '审核失败',
+    'Hide applied': '隐藏已申请',
+    'Show all': '显示全部',
+    'Applied only': '仅显示已申请',
+    'Score (high first)': '评分（从高到低）',
+    'Company (A-Z)': '公司（A-Z）',
+    'Title (A-Z)': '职位名称（A-Z）',
+    'Date added (newest)': '添加日期（最新优先）',
+    'A — Top Match': 'A — 高度匹配',
+    'B — Good Match': 'B — 匹配良好',
+    'C — Possible': 'C — 可以考虑',
+    'D — Low / Deal-breaker': 'D — 低匹配／触发硬性条件',
+    'No jobs match the current filters.': '没有符合当前筛选条件的职位。',
+    'ID': '编号',
+    'Tier': '等级',
+    'Score': '评分',
+    'Company': '公司',
+    'Title': '职位名称',
+    'Status': '状态',
+    'Delete': '删除',
+    'Delete all D': '删除所有 D 级职位',
+    'Delete all D-tier jobs': '删除所有 D 级职位',
+    'Ingested': '已录入',
+    'Add Jobs': '添加职位',
+    'Paste job posting URLs — one per line — to add them to your pipeline.': '粘贴职位发布链接（每行一个），将其加入流水线。',
+    'URLs': '链接',
+    'Add All': '全部添加',
+    'Add & Run Pipeline': '添加并运行流水线',
+    'Results': '结果',
+    'Discover Jobs': '发现职位',
+    'Search job boards for new postings.': '在招聘网站中搜索新职位。',
+    'Use English only for job keywords and city names (for example: backend engineer, Seattle). Do not enter Chinese.': '请不要输入中文；职位关键词和城市名称均请使用英文（例如 backend engineer、Seattle）。',
+    'Query': '关键词',
+    'Location': '地点',
+    'Work location': '工作地点',
+    'e.g. Seattle': '例如：Seattle（请使用英文）',
+    'Enter the city name in English.': '请使用英文城市名。',
+    'Work mode': '工作方式',
+    'Any work mode': '不限工作方式',
+    'Any includes on-site, hybrid, and remote sources.': '不限工作方式会同时搜索线下、混合办公和远程职位来源。',
+    'On-site / hybrid': '线下／混合办公',
+    'Remote': '远程',
+    'remote': '远程',
+    'onsite': '线下办公',
+    'hybrid': '混合办公',
+    'unknown': '未知',
+    'Company board': '公司招聘主页',
+    'Search depth': '搜索深度',
+    'Quick search': '简易搜索',
+    'Deep search': '深度搜索',
+    'Deep search scans additional pages within a fixed request and time budget.': '深度搜索会在固定请求数和时间预算内扫描更多分页。',
+    'Deep search requires a work location when The Muse is enabled.': '使用 The Muse 深度搜索时必须填写工作地点。',
+    'Source': '来源',
+    'Source status': '来源状态',
+    'Search': '搜索',
+    'Searching...': '搜索中…',
+    'e.g. backend engineer': '例如：backend engineer（请使用英文）',
+    'e.g. Seattle (optional)': '例如：上海（可选）',
+    'e.g. Remote (optional)': '例如：远程（可选）',
+    'Required for ATS sources': '选择 ATS 来源时必填',
+    'Public international sources': '公开国际职位来源',
+    'All available sources': '全部可用来源',
+    'No matching jobs found.': '来源可用，但没有找到匹配的职位。',
+    'The source responded successfully but had no matching jobs.': '来源响应正常，但没有匹配的职位。',
+    'Enter at least one URL.': '请至少输入一个链接。',
+    'No jobs found.': '未找到职位。',
+    'Add': '添加',
+    'Added': '已添加',
+    'Duplicate': '重复',
+    'Error': '错误',
+    'Your local, quality-first job search workspace.': '本地运行、质量优先的求职工作台。',
+    'Sign in': '登录',
+    'Create account': '创建账户',
+    'Set password': '设置密码',
+    'Username': '用户名',
+    'Password': '密码',
+    'Confirm password': '确认密码',
+    '3–32 characters: letters, numbers, dot, underscore, or hyphen.': '3–32 个字符：字母、数字、点、下划线或连字符。',
+    'Use at least 10 characters.': '请至少使用 10 个字符。',
+    'Passwords do not match.': '两次输入的密码不一致。',
+    'Authentication failed.': '身份验证失败。',
+    'Data Pipeline': '数据流水线',
+    'How job postings flow from URL to application-ready resume. Click badges to inspect each queue.': '查看职位从链接进入系统，直到生成可投递简历的完整流程。点击徽标可查看各队列。',
+    'Run Pipeline': '运行流水线',
+    'Cancel': '取消',
+    'Full pipeline': '完整流水线',
+    'Extract only': '仅提取',
+    'Score only': '仅评分',
+    'Compose only': '仅生成材料',
+    'Audit only': '仅审核',
+    'Pipeline Running —': '流水线运行中 —',
+    'Task Pool': '任务池',
+    'Job': '职位',
+    'Stage': '阶段',
+    'Title / Company': '职位／公司',
+    'Elapsed': '已用时间',
+    'JOB BOARDS': '招聘网站',
+    'Ingest': '录入',
+    'Extract': '提取',
+    'Compose': '生成材料',
+    'Audit': '审核',
+    'Parse URL': '解析链接',
+    'validate format': '验证格式',
+    'Job Data': '职位数据',
+    'Profile Revision': '个人资料版本',
+    'Job + Profile': '职位＋个人资料',
+    'Inject + Render': '注入内容并渲染',
+    'PDF Output': 'PDF 输出',
+    'Resume PDF': '简历 PDF',
+    'Content Audit': '内容审核',
+    'Visual Audit': '视觉审核',
+    'Audit Report': '审核报告',
+    'Awaiting extraction:': '等待提取：',
+    'Extraction failed:': '提取失败：',
+    'Extracted, awaiting scoring:': '已提取，等待评分：',
+    'Scored, awaiting composition:': '已评分，等待生成材料：',
+    'Composed, awaiting audit:': '材料已生成，等待审核：',
+    'Run extraction': '运行提取',
+    'Retry extraction': '重试提取',
+    'Run this step': '运行此步骤',
+    'Run compose': '运行材料生成',
+    'moved on': '已进入下一步',
+    'queued': '排队中',
+    'failed': '失败',
+    'manual': '需手动处理',
+    'skipped': '已跳过',
+    'composed': '已生成材料',
+    'audited': '已审核',
+    'Starting...': '正在启动…',
+    'Pipeline is already running.': '流水线已在运行。',
+    'Event Timeline': '事件时间线',
+    'Every state transition across all jobs. From URL ingestion to audit pass/fail.': '所有职位的状态变更记录，涵盖链接录入到审核通过或失败。',
+    'Job:': '职位：',
+    'Type:': '类型：',
+    'No events yet.': '暂无事件。',
+    'Deleted': '已删除',
+    'AI Call Log': 'AI 调用日志',
+    'Latest 500 lines from': '最近 500 行，来源：',
+    'For the full log, use the shell:': '如需完整日志，请在终端运行：',
+    'Operation:': '操作：',
+    'Success': '成功',
+    'Failed': '失败',
+    'Time': '时间',
+    'Operation': '操作',
+    'Model': '模型',
+    'Request': '请求',
+    'Response': '响应',
+    'Duration': '耗时',
+    'Input tokens': '输入 token',
+    'Output tokens': '输出 token',
+    'Cached tokens': '缓存 token',
+    'Cached tokens (billed at 10%)': '缓存 token（按 10% 计费）',
+    'No AI calls logged yet. Run a pipeline step or use the profile AI editor to generate some.': '暂无 AI 调用记录。运行流水线步骤或使用个人资料 AI 编辑器后会显示在这里。',
+    'Manage your candidate profile and job preferences. All data is stored in the database and never committed.': '管理候选人资料和求职偏好。所有数据均保存在本地数据库中，不会提交到 Git。',
+    'Candidate Profile': '候选人资料',
+    'Work history, education, skills, links. The source of truth for resume tailoring — never fabricated, only rearranged.': '工作经历、教育背景、技能和链接。它是简历定制的唯一事实来源；系统只会重组内容，绝不会编造。',
+    'Preferences': '求职偏好',
+    'Job titles, locations, industries, deal-breakers, and scoring weights.': '目标职位、地点、行业、硬性排除条件和评分权重。',
+    'Size': '大小',
+    'Sections': '分区',
+    'View & Edit →': '查看并编辑 →',
+    'Back to Profile': '返回个人资料',
+    'View': '查看',
+    'Edit Manually': '手动编辑',
+    'Edit with AI': '使用 AI 编辑',
+    'Save': '保存',
+    'Saving...': '保存中…',
+    'Saved': '已保存',
+    'Save failed': '保存失败',
+    'Describe what you want to change in natural language. The AI will propose a complete YAML draft while preserving unrelated content.': '用自然语言描述要修改的内容。AI 会生成完整的 YAML 草稿，并保留无关内容。',
+    'Update with AI': '使用 AI 更新',
+    'Review changes —': '检查更改 —',
+    'Move Draft to Editor': '将草稿移到编辑器',
+    'Discard': '放弃',
+    'Before (current)': '修改前（当前）',
+    'After (AI proposed)': '修改后（AI 建议）',
+    'No changes detected': '未检测到更改',
+    'Describe what you want to change.': '请描述你想修改的内容。',
+    'AI is thinking...': 'AI 正在思考…',
+    'Review the changes — old on left, new on right': '请检查更改 — 左侧为原内容，右侧为新内容',
+    'e.g., Reword my existing backend experience more concisely without changing any facts or metrics.': '例如：在不改变任何事实或数据的前提下，更精炼地表述我现有的后端经验。',
+    'e.g., Add San Francisco to my preferred locations and defense to my deal-breakers.': '例如：将上海加入偏好地点，并将国防行业加入硬性排除条件。',
+    'Back to Dashboard': '返回仪表盘',
+    'Pipeline Progress': '流水线进度',
+    'Pipeline Complete': '流水线已完成',
+    'Continue Pipeline': '继续流水线',
+    'Restart Pipeline': '重新运行流水线',
+    'Market Intelligence': '市场洞察',
+    'Salary Ranges': '薪资范围',
+    'Top Skills in Market': '市场热门技能',
+    'Similar Titles': '相似职位名称',
+    'No market data yet. Score some jobs to populate market intelligence.': '暂无市场数据。为一些职位评分后即可生成市场洞察。',
+    'Extracted Data': '提取的数据',
+    'Salary': '薪资',
+    'Skills': '技能',
+    'Apply URL': '申请链接',
+    'Re-extract': '重新提取',
+    'Not extracted yet.': '尚未提取。',
+    'Job Description': '职位描述',
+    'No description extracted yet.': '尚未提取职位描述。',
+    'Resume Documents': '求职材料',
+    'Download Resume PDF': '下载简历 PDF',
+    'No resume PDF yet.': '尚未生成简历 PDF。',
+    'Download Cover Letter': '下载求职信',
+    'Professional': '专业',
+    'Enthusiastic': '热情',
+    'Concise': '简洁',
+    'Re-score': '重新评分',
+    "Optional: e.g. 'Focus on backend skills'...": '可选：例如“重点关注后端技能”…',
+    'Optional: AI instruction for re-extract...': '可选：给 AI 的重新提取指令…',
+    "Optional: e.g. 'Emphasize AWS experience'...": '可选：例如“突出 AWS 经验”…',
+    'Optional: AI instruction for re-audit...': '可选：给 AI 的重新审核指令…',
+    'Not scored yet.': '尚未评分。',
+    'Re-compose': '重新生成材料',
+    'Audit Results': '审核结果',
+    'Overall /100': '总分／100',
+    'Content': '内容',
+    'Visual': '视觉',
+    'No issues found': '未发现问题',
+    'Not audited yet.': '尚未审核。',
+    'Re-audit': '重新审核',
+    'Re-compose with Audit Feedback': '根据审核反馈重新生成',
+    'Application Tracking': '申请跟踪',
+    'Submitted:': '提交时间：',
+    'Response:': '回复：',
+    'Notes:': '备注：',
+    'Replied': '已回复',
+    'Interview': '面试',
+    'Offer': '录用意向',
+    'Rejected': '被拒',
+    'Accepted': '已接受',
+    'Declined': '已谢绝',
+    'Not applied yet.': '尚未申请。',
+    'Mark as Applied': '标记为已申请',
+    'Running...': '运行中…',
+    'Generating...': '生成中…',
+    'Download': '下载',
+    'Regenerate': '重新生成',
+    'Marking...': '正在标记…',
+    'Recording...': '正在记录…',
+    'Starting pipeline...': '正在启动流水线…',
+    'Pipeline started — polling...': '流水线已启动 — 正在检查进度…',
+    'Compose started — auditing next...': '材料生成已启动 — 下一步将执行审核…',
+    'Timed out waiting for pipeline': '等待流水线超时',
+    'Cancel the running pipeline': '取消正在运行的流水线',
+    'Run the full pipeline (extract → score → compose → audit)': '运行完整流水线（提取 → 评分 → 生成材料 → 审核）'
+  });
+
+  const textState = new WeakMap();
+  const attributeState = new WeakMap();
+  let locale = localStorage.getItem(STORAGE_KEY) === 'zh-CN' ? 'zh-CN' : 'en';
+  let titleSource = document.title;
+  const titleShouldTranslate = !document.querySelector?.('title[data-i18n-skip]');
+
+  const patterns = [
+    [/^(\d+) total$/, '$1 个职位'],
+    [/^(\d+) job\(s\)$/, '$1 个职位'],
+    [/^(\d+) URLs? entered$/, '已输入 $1 个链接'],
+    [/^(\d+) URL\(s\) entered$/, '已输入 $1 个链接'],
+    [/^(\d+) entries$/, '$1 条记录'],
+    [/^(\d+) added$/, '已添加 $1 个'],
+    [/^(\d+) duplicate\(s\)$/, '$1 个重复项'],
+    [/^(\d+) error\(s\)$/, '$1 个错误'],
+    [/^(\d+) queued$/, '$1 个排队中'],
+    [/^(\d+) failed$/, '$1 个失败'],
+    [/^(\d+) moved on$/, '$1 个已进入下一步'],
+    [/^(\d+) composed$/, '$1 个已生成材料'],
+    [/^(\d+) audited$/, '$1 个已审核'],
+    [/^(\d+) result\(s\) from (.+)$/, '从 $2 找到 $1 个结果'],
+    [/^(\d+) matching job\(s\) found\.$/, '找到 $1 个匹配职位。'],
+    [/^(greenhouse|lever|ashby) requires a company board name\.$/i, '$1 需要填写公司招聘主页名称。'],
+    [/^(jobicy|remotive) only provides remote jobs\.$/i, '$1 仅提供远程职位。'],
+    [/^STEP (\d+)$/, '第 $1 步'],
+    [/^\+(\d+) more$/, '另有 $1 项'],
+    [/^(\d+) issue\(s\) found \((\d+) content, (\d+) visual\)$/, '发现 $1 个问题（内容 $2 个，视觉 $3 个）'],
+    [/^\+(\d+) added$/, '新增 $1 行'],
+    [/^−(\d+) removed$/, '删除 $1 行'],
+    [/^Re-run (.+)$/, '重新运行 $1'],
+    [/^Restart from (.+)$/, '从 $1 重新开始'],
+    [/^Re-composing (.+)\.\.\.$/, '正在重新生成 $1…']
+  ];
+
+  const messagePatterns = [
+    [/^Error: (.+)$/s, '错误：$1'],
+    [/^Failed: (.+)$/s, '失败：$1'],
+    [/^Delete failed: (.+)$/s, '删除失败：$1'],
+    [/^Failed to start: (.+)$/s, '启动失败：$1'],
+    [/^Delete job #(\d+): "(.+)"\?\n\nThis is permanent and cannot be undone\.$/s, '删除职位 #$1：“$2”？\n\n此操作不可撤销。'],
+    [/^Delete job #(\d+)\?\n\nThis is permanent and cannot be undone\.$/s, '删除职位 #$1？\n\n此操作不可撤销。'],
+    [/^Delete ALL D-tier jobs\?\n\nThis is permanent and cannot be undone\.$/s, '删除所有 D 级职位？\n\n此操作不可撤销。'],
+    [/^Mark this job as applied\?$/s, '将此职位标记为已申请？'],
+    [/^Cancel the running pipeline\? Already-running tasks will finish but no new tasks will start\.$/s, '取消正在运行的流水线？正在执行的任务会完成，但不会启动新任务。'],
+    [/^Generate a cover letter for this job via AI\? This will replace any existing one\.$/s, '使用 AI 为此职位生成求职信？现有求职信将被替换。'],
+    [/^Re-compose with the latest audit feedback and re-audit\?$/s, '根据最新审核反馈重新生成材料并再次审核？']
+  ];
+
+  function translated(source) {
+    if (locale !== 'zh-CN') return source;
+    if (ZH[source]) return ZH[source];
+    for (const [pattern, replacement] of patterns) {
+      if (pattern.test(source)) return source.replace(pattern, replacement);
+    }
+    const decorated = source.match(/^([^A-Za-z0-9]+)([A-Za-z].*)$/s);
+    if (decorated) {
+      const translatedRemainder = translated(decorated[2]);
+      if (translatedRemainder !== decorated[2]) return decorated[1] + translatedRemainder;
+    }
+    for (const [pattern, replacement] of messagePatterns) {
+      if (pattern.test(source)) return source.replace(pattern, replacement);
+    }
+    return source;
+  }
+
+  function translateTextNode(node) {
+    if (isTranslationSkipped(node) || !isTranslationTargeted(node)) return;
+    const current = node.nodeValue || '';
+    const previous = textState.get(node);
+    const source = previous && current === previous.rendered ? previous.source : current;
+    const leading = source.match(/^\s*/)?.[0] || '';
+    const trailing = source.match(/\s*$/)?.[0] || '';
+    const core = source.slice(leading.length, source.length - trailing.length);
+    if (!core) return;
+    const rendered = leading + translated(core) + trailing;
+    textState.set(node, { source, rendered });
+    if (current !== rendered) node.nodeValue = rendered;
+  }
+
+  function translateAttribute(element, name) {
+    if (isTranslationSkipped(element) || !isTranslationTargeted(element)) return;
+    if (!element.hasAttribute(name)) return;
+    let state = attributeState.get(element);
+    if (!state) {
+      state = {};
+      attributeState.set(element, state);
+    }
+    const current = element.getAttribute(name) || '';
+    const previous = state[name];
+    const source = previous && current === previous.rendered ? previous.source : current;
+    const rendered = translated(source);
+    state[name] = { source, rendered };
+    if (current !== rendered) element.setAttribute(name, rendered);
+  }
+
+  function isTranslationSkipped(node) {
+    const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    return Boolean(element?.closest?.('[data-i18n-skip]'));
+  }
+
+  function isTranslationTargeted(node) {
+    const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    return Boolean(element?.closest?.('[data-i18n]'));
+  }
+
+  function translateTree(root = document.body) {
+    if (!root) return;
+    const visit = (node) => {
+      if (isTranslationSkipped(node)) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        translateTextNode(node);
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const element = node;
+      if (element.matches('[data-language-toggle]')) return;
+      translateAttribute(element, 'placeholder');
+      translateAttribute(element, 'title');
+      translateAttribute(element, 'aria-label');
+      if (element.matches('script, style, code, pre, textarea, [data-i18n-skip]')) return;
+      for (const child of element.childNodes) visit(child);
+    };
+    visit(root);
+  }
+
+  function updateToggle() {
+    for (const button of document.querySelectorAll('[data-language-toggle]')) {
+      button.textContent = locale === 'zh-CN' ? 'EN' : '中文';
+      button.title = locale === 'zh-CN' ? 'Switch to English' : '切换到中文';
+      button.setAttribute('aria-label', button.title);
+    }
+  }
+
+  function applyLocale() {
+    document.documentElement.lang = locale;
+    document.title = locale === 'zh-CN' && titleShouldTranslate
+      ? titleSource.split(' — ').map(part => translated(part)).join(' — ')
+      : titleSource;
+    translateTree(document.body);
+    updateToggle();
+  }
+
+  function setLocale(nextLocale) {
+    locale = nextLocale === 'zh-CN' ? 'zh-CN' : 'en';
+    localStorage.setItem(STORAGE_KEY, locale);
+    applyLocale();
+    window.dispatchEvent(new CustomEvent('jobbot:localechange', { detail: { locale } }));
+  }
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('[data-language-toggle]')) {
+      setLocale(locale === 'zh-CN' ? 'en' : 'zh-CN');
+    }
+  });
+
+  const nativeAlert = window.alert.bind(window);
+  const nativeConfirm = window.confirm.bind(window);
+  window.alert = message => nativeAlert(translated(String(message)));
+  window.confirm = message => nativeConfirm(translated(String(message)));
+  window.jobbotI18n = Object.freeze({
+    get locale() { return locale; },
+    setLocale,
+    translate: value => translated(String(value)),
+    apply: applyLocale,
+  });
+
+  const observer = new MutationObserver(mutations => {
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData' && !isTranslationSkipped(mutation.target) && isTranslationTargeted(mutation.target)) translateTextNode(mutation.target);
+      for (const node of mutation.addedNodes) {
+        if ((node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) && !isTranslationSkipped(node)) translateTree(node);
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+  applyLocale();
+})();
+</script>

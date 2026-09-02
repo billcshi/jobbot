@@ -10,6 +10,7 @@
  */
 
 import express from 'express';
+import { parseHttpUrl } from '../utils/url.js';
 import path from 'node:path';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -22,6 +23,7 @@ import { readCandidate, readPreferences, writeProfile } from '../utils/profile-s
 import { parseYaml } from '../utils/yaml.js';
 import { getDeepseekKey, getDeepseekModel, getStageConcurrency } from '../utils/config.js';
 import { logAiCall, extractUsage } from '../utils/ai-logger.js';
+import { requestAiJson } from '../utils/http-json.js';
 import { logger } from '../utils/logger.js';
 import { getPipelineManager } from '../jobs/pipeline-state.js';
 import { appContextForUser } from '../utils/app-context.js';
@@ -330,6 +332,10 @@ function scoreFmt(s: number | null): string {
   return s.toFixed(2);
 }
 
+function safeExternalUrl(value: string | null): string {
+  return value ? (parseHttpUrl(value)?.href ?? '#') : '#';
+}
+
 // ----- routes: dashboard ---------------------------------------------------
 
 app.get('/', (req, res) => {
@@ -459,7 +465,7 @@ app.get('/', (req, res) => {
     stageCounts,
     topCompanies,
     filters: { tier: tierFilter, status: statusFilter, sort, applied: appliedFilter },
-    helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt },
+    helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt, safeExternalUrl },
   });
 });
 
@@ -633,7 +639,7 @@ app.get('/jobs/:id', (req, res) => {
     salaryMarket,
     skillMarket,
     titleMarket,
-    helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt },
+    helpers: { tierLabel, tierClass, statusLabel, truncate, scoreFmt, safeExternalUrl },
   });
 });
 
@@ -1068,37 +1074,18 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
   const startMs = Date.now();
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      const errMsg = `DeepSeek API error ${response.status}: ${body.slice(0, 200)}`;
-      logAiCall({
-        operation: 'profile-edit',
-        model: getDeepseekModel(),
-        provider: 'deepseek',
-        endpoint: 'https://api.deepseek.com/v1/chat/completions',
-        requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
-        responseSummary: errMsg,
-        durationMs: Date.now() - startMs,
-        success: false,
-        error: errMsg,
-      });
-      res.status(500).json({ error: errMsg });
-      return;
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { label: 'DeepSeek profile edit' });
+    const data = request.data;
     const content = data.choices[0]?.message?.content || '';
     const cleaned = content.replace(/^```ya?ml\s*\n?/, '').replace(/\n?```\s*$/, '');
     const parsed = parseYaml<unknown>(cleaned);
@@ -1115,7 +1102,7 @@ app.post('/api/profile/:file/ai-edit', async (req, res) => {
       requestSummary: `Edit ${file}.yaml: "${instruction.slice(0, 100)}"`,
       responseSummary: `Output: ${cleaned.length} chars (was ${currentYaml.length} chars)`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -1665,23 +1652,54 @@ app.get('/api/market-data', async (_req, res) => {
 // ----- routes: discover API ------------------------------------------------
 
 app.get('/api/discover', async (req, res) => {
-  const query = typeof req.query.query === 'string' ? req.query.query : '';
+  const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
   const location = typeof req.query.location === 'string' ? req.query.location : undefined;
   const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+  const company = typeof req.query.company === 'string' ? req.query.company : undefined;
+  const workMode = typeof req.query.workMode === 'string' ? req.query.workMode : 'any';
+  const searchDepth = typeof req.query.searchDepth === 'string' ? req.query.searchDepth : 'quick';
 
   if (!query) {
-    res.status(400).json({ error: 'Missing query parameter' });
+    res.status(400).json({ errorCode: 'DISCOVER_QUERY_REQUIRED', error: 'Missing query parameter' });
     return;
   }
-
+  if (/\p{Script=Han}/u.test(`${query} ${location ?? ''}`)) {
+    res.status(400).json({ errorCode: 'DISCOVER_ENGLISH_REQUIRED', error: 'Job keywords and location must be entered in English.' });
+    return;
+  }
+  if (workMode !== 'any' && workMode !== 'remote' && workMode !== 'onsite') {
+    res.status(400).json({ errorCode: 'DISCOVER_WORK_MODE_INVALID', error: `Unknown work mode: ${workMode}` });
+    return;
+  }
+  if (searchDepth !== 'quick' && searchDepth !== 'deep') {
+    res.status(400).json({ errorCode: 'DISCOVER_DEPTH_INVALID', error: `Unknown search depth: ${searchDepth}` });
+    return;
+  }
+  if (searchDepth === 'deep' && !location && (!source || source === 'themuse')) {
+    res.status(400).json({ errorCode: 'DISCOVER_LOCATION_REQUIRED', error: 'Deep search requires a work location when The Muse is enabled.' });
+    return;
+  }
   try {
-    const { discoverJobs } = await import('../jobs/discover.js');
-    const results = await discoverJobs({ query, location, sources: source ? [source as 'greenhouse' | 'lever' | 'ashby' | 'linkedin'] : undefined });
+    const { discoverJobsDetailed } = await import('../jobs/discover.js');
+    type DiscoverySource = import('../jobs/discover.js').DiscoverySource;
+    const validSources: DiscoverySource[] = ['themuse', 'jobicy', 'remotive', 'greenhouse', 'lever', 'ashby', 'linkedin'];
+    if (source && !validSources.includes(source as DiscoverySource)) {
+      res.status(400).json({ errorCode: 'DISCOVER_SOURCE_INVALID', error: `Unknown discovery source: ${source}` });
+      return;
+    }
+    const { results, diagnostics } = await discoverJobsDetailed({
+      query,
+      location,
+      company,
+      workMode,
+      searchDepth,
+      sources: source ? [source as DiscoverySource] : undefined,
+    });
     const sources = [...new Set(results.map((r: { source: string }) => r.source))];
-    res.json({ ok: true, results, sources });
+    res.json({ ok: true, results, sources, diagnostics, searchDepth });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
+    res.status(500).json({ errorCode: 'DISCOVER_FAILED', error: msg });
   }
 });
 

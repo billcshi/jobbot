@@ -12,10 +12,18 @@ import { getActiveUserId } from '../utils/user-context.js';
 import { buildCandidateEvidence, evidencePromptContext } from '../domain/resume/evidence.js';
 import { parseProvenancedTailoredResumeData } from '../domain/resume/contract.js';
 import { ProfileRepository } from '../repositories/profile-repository.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 const AUDIT_ATS = readFileSync(`${PROJECT_ROOT}/prompts/audit-ats.md`, 'utf-8');
 const AUDIT_HM = readFileSync(`${PROJECT_ROOT}/prompts/audit-hm.md`, 'utf-8');
 const AUDIT_FORMAT = readFileSync(`${PROJECT_ROOT}/prompts/audit-format.md`, 'utf-8');
+
+const SHARED_AUDIT_OUTPUT_CONTRACT = [
+  'Your JSON response MUST include: score (number 0-100), summary (string), and issues (array).',
+  'Every issue severity MUST be exactly one of: high, medium, low.',
+  'Every issue category MUST be exactly one of: accuracy, formatting, keywords, layout, visual, content.',
+  'Do not use synonyms such as moderate, major, minor, experience, or contact as enum values.',
+].join('\n');
 
 /** Committee reviewers: each has a name, prompt, and weight in the combined score. */
 const COMMITTEE: { name: string; prompt: string; weight: number }[] = [
@@ -51,6 +59,62 @@ interface VisualAuditResult {
   issues: AuditIssue[];
   score: number;
   summary: string;
+}
+
+export function parseLocalVisualReview(
+  value: unknown,
+  expected: { jobId: number; resumeVersionId: number; resumeSha256: string },
+): VisualAuditResult & { reviewer: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Local visual review must be an object');
+  }
+  const root = value as Record<string, unknown>;
+  if (root['schema_version'] !== 1) throw new Error('Local visual review schema_version must be 1');
+  if (root['job_id'] !== expected.jobId) throw new Error('Local visual review job does not match');
+  if (root['resume_version_id'] !== expected.resumeVersionId) {
+    throw new Error('Local visual review resume version does not match');
+  }
+  if (root['resume_sha256'] !== expected.resumeSha256) {
+    throw new Error('Local visual review PDF hash does not match');
+  }
+  if (root['status'] !== 'passed') throw new Error('Local visual review status must be passed');
+  if (root['reviewer_type'] !== 'human' && root['reviewer_type'] !== 'agent') {
+    throw new Error('Local visual review reviewer_type must be human or agent');
+  }
+  if (typeof root['reviewer'] !== 'string' || root['reviewer'].trim().length === 0) {
+    throw new Error('Local visual review requires a reviewer');
+  }
+  const parsed = parseAuditModelOutput(root);
+  return { status: 'passed', ...parsed, reviewer: root['reviewer'].trim() };
+}
+
+export function parseLocalVisualReviewSafely(
+  value: unknown,
+  expected: { jobId: number; resumeVersionId: number; resumeSha256: string },
+): { review: (VisualAuditResult & { reviewer: string }) | null; error?: string } {
+  try {
+    return { review: parseLocalVisualReview(value, expected) };
+  } catch (error) {
+    return { review: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function loadLocalVisualReview(
+  jobId: number,
+  resumeVersionId: number,
+  resumeSha256: string,
+): { review: (VisualAuditResult & { reviewer: string }) | null; error?: string } {
+  const reviewPath = `${jobResumeDir(jobId)}/visual-review.json`;
+  if (!existsSync(reviewPath)) return { review: null };
+  try {
+    return parseLocalVisualReviewSafely(JSON.parse(readFileSync(reviewPath, 'utf-8')) as unknown, {
+      jobId,
+      resumeVersionId,
+      resumeSha256,
+    });
+  } catch (error) {
+    return { review: null, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export function calculateAuditOutcome(
@@ -205,7 +269,7 @@ async function runSingleReviewer(
   const requestBody: Record<string, unknown> = {
     model: getDeepseekModel(),
     messages: [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: `${systemPrompt}\n\n${SHARED_AUDIT_OUTPUT_CONTRACT}` },
       {
         role: 'user',
         content: [
@@ -230,22 +294,15 @@ async function runSingleReviewer(
   const startMs = Date.now();
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: `DeepSeek ${name} audit` });
+    const data = request.data;
     const content = data.choices[0]?.message?.content;
     if (!content) throw new Error('Empty response from DeepSeek');
 
@@ -262,7 +319,7 @@ async function runSingleReviewer(
       requestSummary: `${name}: ${resumeText.length} chars resume`,
       responseSummary: `Score ${score}/100, ${issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -397,6 +454,7 @@ async function auditVisualAnthropic(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<VisualAuditResult> {
+  const startMs = Date.now();
   try {
     const images = imagePaths.slice(0, 3).map(imageToBase64);
 
@@ -422,9 +480,10 @@ async function auditVisualAnthropic(
       messages: [{ role: 'user', content }],
     };
 
-    const startMs = Date.now();
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const request = await requestAiJson<{
+      content: [{ text: string }];
+      usage?: Record<string, number>;
+    }>('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -432,18 +491,8 @@ async function auditVisualAnthropic(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Anthropic API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      content: [{ text: string }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: 'Anthropic visual audit' });
+    const data = request.data;
     const jsonText = data.content[0]?.text || '{}';
     const parsed = parseAuditModelOutput(parseLLMJson(jsonText, 'audit-visual'));
     const usage = extractUsage(data as Record<string, unknown>);
@@ -458,7 +507,7 @@ async function auditVisualAnthropic(
       requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
       responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -473,7 +522,7 @@ async function auditVisualAnthropic(
       endpoint: 'https://api.anthropic.com/v1/messages',
       requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
       responseSummary: msg,
-      durationMs: 0,
+      durationMs: Date.now() - startMs,
       success: false,
       error: msg,
     });
@@ -488,6 +537,7 @@ async function auditVisualOpenAI(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<VisualAuditResult> {
+  const startMs = Date.now();
   try {
     const images = imagePaths.slice(0, 3).map(imageToBase64);
 
@@ -513,27 +563,18 @@ async function auditVisualOpenAI(
       messages: [{ role: 'user', content }],
     };
 
-    const startMs = Date.now();
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 200)}`);
-    }
-
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
-    };
+    }, { signal, label: 'OpenAI visual audit' });
+    const data = request.data;
     const jsonText = data.choices[0]?.message?.content || '{}';
     const parsed = parseAuditModelOutput(parseLLMJson(jsonText, 'audit-visual'));
     const usage = extractUsage(data as Record<string, unknown>);
@@ -548,7 +589,7 @@ async function auditVisualOpenAI(
       requestSummary: `Visual audit: ${imagePaths.length} page(s), ${imagePaths.length} image(s)`,
       responseSummary: `Score ${result.score}/100, ${result.issues.length} issues`,
       ...usage,
-      durationMs: Date.now() - startMs,
+      durationMs: request.durationMs,
       success: true,
     });
 
@@ -563,7 +604,7 @@ async function auditVisualOpenAI(
       endpoint: 'https://api.openai.com/v1/chat/completions',
       requestSummary: `Visual audit: ${imagePaths.length} page(s)`,
       responseSummary: msg,
-      durationMs: 0,
+      durationMs: Date.now() - startMs,
       success: false,
       error: msg,
     });
@@ -742,14 +783,30 @@ export async function auditJob(jobId: number, signal?: AbortSignal, userId = get
   let visualSummary = 'Visual audit did not complete';
 
   try {
-    const imagePaths = pdfToImages(
-      pdfBytes,
-      jobResumeDir(jobId),
-      `audit-${canonicalVersion.id}-${canonicalVersion.sha256.slice(0, 12)}`,
+    const localReviewAttempt = loadLocalVisualReview(
+      jobId,
+      canonicalVersion.id,
+      canonicalVersion.sha256,
     );
-    if (imagePaths.length > 0) {
+    if (localReviewAttempt.error) {
+      logger.warn(`Ignoring invalid local visual review: ${localReviewAttempt.error}`);
+    }
+
+    let result: VisualAuditResult;
+    if (localReviewAttempt.review) {
+      console.log(`  Using hash-bound local visual review by ${localReviewAttempt.review.reviewer}`);
+      result = localReviewAttempt.review;
+    } else {
+      const imagePaths = pdfToImages(
+        pdfBytes,
+        jobResumeDir(jobId),
+        `audit-${canonicalVersion.id}-${canonicalVersion.sha256.slice(0, 12)}`,
+      );
+      if (imagePaths.length === 0) throw new Error('PDF conversion produced no images');
       console.log(`  Converted ${imagePaths.length} page(s) to images`);
-      const result = await auditVisual(imagePaths, job.description || '', signal);
+      result = await auditVisual(imagePaths, job.description || '', signal);
+    }
+
       visualIssues = result.issues;
       visualScore = result.score;
       visualStatus = result.status;
@@ -767,15 +824,6 @@ export async function auditJob(jobId: number, signal?: AbortSignal, userId = get
       for (const issue of visualIssues) {
         console.log(`  [${issue.severity}] ${issue.category}: ${issue.description}`);
       }
-    } else {
-      visualStatus = 'failed';
-      visualSummary = 'PDF conversion produced no images';
-      visualIssues = [{
-        severity: 'high', category: 'visual',
-        description: visualSummary,
-        suggestion: 'Repair PDF image conversion and rerun the visual audit.',
-      }];
-    }
   } catch (err) {
     rethrowIfAborted(err, signal);
     const msg = err instanceof Error ? err.message : String(err);

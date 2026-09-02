@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   buildProfileEditPrompt,
   isTrustedMutationRequest,
   profileAllowsExternalAiEdit,
   profileYamlForAiDraft,
 } from '../src/ui/server';
+import { isHttpUrl, parseHttpUrl } from '../src/utils/url.js';
 
 describe('web mutation security', () => {
   it('accepts a localhost same-origin browser mutation', () => {
@@ -31,6 +34,35 @@ describe('web mutation security', () => {
 
   it('does not restrict read-only requests', () => {
     expect(isTrustedMutationRequest({ method: 'GET' })).toBe(true);
+  });
+
+  it('allows only absolute HTTP(S) job links', () => {
+    expect(isHttpUrl('https://jobs.example.com/backend?id=1')).toBe(true);
+    expect(isHttpUrl('http://jobs.example.com/backend')).toBe(true);
+    expect(parseHttpUrl("javascript:alert('xss')")).toBeNull();
+    expect(parseHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(parseHttpUrl('/relative/job')).toBeNull();
+    expect(parseHttpUrl('https://user:password@example.com/job')).toBeNull();
+  });
+
+  it('trims discovery queries at both CLI and HTTP boundaries', () => {
+    const cli = readFileSync(path.join(process.cwd(), 'src', 'cli.ts'), 'utf8');
+    const server = readFileSync(path.join(process.cwd(), 'src', 'ui', 'server.ts'), 'utf8');
+    expect(cli).toContain("const query = flags['query']?.trim()");
+    expect(server).toContain('req.query.query.trim()');
+    expect(server).toContain("errorCode: 'DISCOVER_QUERY_REQUIRED'");
+  });
+
+  it('never interpolates an adversarial HTTP URL into an inline event handler', () => {
+    const adversarialUrl = "https://jobs.example.com/x').constructor.constructor('alert(1)')()('";
+    expect(isHttpUrl(adversarialUrl)).toBe(true);
+
+    const addUrlsView = readFileSync(
+      path.join(process.cwd(), 'src', 'ui', 'views', 'add-urls.ejs'),
+      'utf8',
+    );
+    expect(addUrlsView).not.toContain('onclick="addOne(');
+    expect(addUrlsView).toContain("button.addEventListener('click'");
   });
 
   it('allows review-first AI editing for both profile sections', () => {

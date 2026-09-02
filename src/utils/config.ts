@@ -141,19 +141,25 @@ export function getDeepseekModel(): string {
   return config.deepseek_model || 'deepseek-v4-pro';
 }
 
-/** Default thinking config: disabled for scoring (flash), enabled for heavy ops (pro). */
+/** Default thinking config: simple operations are disabled; heavier operations follow the model. */
 const DEFAULT_THINKING: DeepseekThinkingConfig = {
   default: 'auto',
   operations: {
     score: 'disabled',       // flash model, scoring is straightforward
     extract: 'disabled',     // structured extraction, no reasoning needed
-    customize: 'enabled',       // complex resume customization benefits from reasoning
-    'cover-letter': 'enabled', // creative writing benefits from reasoning
-    'audit-ats-screener': 'enabled',
-    'audit-hiring-manager': 'enabled',
-    'audit-format-reviewer': 'enabled',
+    customize: 'auto',       // Flash stays concise; heavier models may reason
+    'cover-letter': 'auto',
+    'audit-ats-screener': 'auto',
+    'audit-hiring-manager': 'auto',
+    'audit-format-reviewer': 'auto',
   },
 };
+
+/** Resolve an explicit or automatic thinking mode for a specific model. */
+export function resolveDeepseekThinking(mode: ThinkingMode, model: string): { type: 'enabled' | 'disabled' } {
+  if (mode === 'enabled' || mode === 'disabled') return { type: mode };
+  return { type: model.toLowerCase().includes('flash') ? 'disabled' : 'enabled' };
+}
 
 /**
  * Resolve the thinking mode for a given operation.
@@ -170,16 +176,14 @@ export function getDeepseekThinking(operation: string): { type: string } | undef
     const opMode = DEFAULT_THINKING.operations?.[operation];
     if (opMode === 'disabled') return { type: 'disabled' };
     if (opMode === 'enabled') return { type: 'enabled' };
-    // auto: let the model decide (don't send thinking param)
-    return undefined;
+    return resolveDeepseekThinking('auto', config.deepseek_model);
   }
 
   // User has thinking config — resolve per-operation
   const opMode = thinking.operations?.[operation] ?? thinking.default;
   if (opMode === 'disabled') return { type: 'disabled' };
   if (opMode === 'enabled') return { type: 'enabled' };
-  // auto: don't send thinking param (API default)
-  return undefined;
+  return resolveDeepseekThinking('auto', config.deepseek_model);
 }
 
 /** Default concurrency: 50 global, 10 per-user, lower limits for pdflatex stages. */

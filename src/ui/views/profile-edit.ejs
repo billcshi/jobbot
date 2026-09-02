@@ -1,10 +1,10 @@
-<%- include('_head', { title: profileLabel + ' — Profile' }) %>
+<%- include('_head', { title: profileLabel + ' — Profile', activeNav: 'profile' }) %>
 
 <a href="/profile" class="back-link">← Back to Profile</a>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
   <h1 style="font-size:20px;font-weight:600"><%= profileLabel %></h1>
-  <span style="font-size:12px;color:var(--text-dim)"><%= filePath %></span>
+  <span data-i18n-skip style="font-size:12px;color:var(--text-dim)"><%= filePath %></span>
 </div>
 <p style="color:var(--text-muted);margin-bottom:20px;font-size:13px"><%= description %></p>
 

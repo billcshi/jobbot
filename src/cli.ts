@@ -16,7 +16,7 @@ import { extractJob, extractAll } from './jobs/extract.js';
 import { scoreAll } from './jobs/score.js';
 import { listJobs } from './jobs/list.js';
 import { deleteJob, deleteByTier, deleteByStatus } from './jobs/delete.js';
-import { discoverJobs } from './jobs/discover.js';
+import { discoverJobsDetailed, type DiscoverySource } from './jobs/discover.js';
 import { printMarketData } from './jobs/market-data.js';
 import { startUi } from './ui/server.js';
 import { runOnce, startSchedule } from './jobs/schedule.js';
@@ -32,7 +32,7 @@ function usage(): never {
 Usage:
   pnpm jobbot init-db
   pnpm jobbot add-url <url> [url2 ...]
-  pnpm jobbot discover --query <terms> [--location <city>] [--source <board>] [--ingest] [--company <name>]
+  pnpm jobbot discover --query <terms> [--location <city>] [--work-mode any|onsite|remote] [--depth quick|deep] [--source <board>] [--ingest] [--company <name>]
   pnpm jobbot extract [--job <id>]
   pnpm jobbot score [--user <name>]
   pnpm jobbot list [--tier <tier>] [--user <name>]
@@ -320,24 +320,40 @@ async function main(): Promise<void> {
     }
 
     case 'discover': {
-      const query = flags['query'];
+      const query = flags['query']?.trim();
       const location = flags['location'];
       const source = flags['source'];
       const ingest = flags['ingest'] === 'true';
       const company = flags['company'];
+      const workModeFlag = flags['work-mode'];
+      const searchDepthFlag = flags['depth'];
 
       if (!query) {
         logger.error('discover requires --query <search terms>');
         process.exit(1);
       }
+      if (workModeFlag && !['any', 'onsite', 'remote'].includes(workModeFlag)) {
+        logger.error('discover --work-mode must be any, onsite, or remote');
+        process.exit(1);
+      }
+      if (searchDepthFlag && !['quick', 'deep'].includes(searchDepthFlag)) {
+        logger.error('discover --depth must be quick or deep');
+        process.exit(1);
+      }
 
-      const sources = source ? source.split(',').map((s: string) => s.trim()) as Array<'greenhouse' | 'lever' | 'ashby' | 'linkedin'> : undefined;
+      const sources = source ? source.split(',').map((s: string) => s.trim()) as DiscoverySource[] : undefined;
+      const workMode = workModeFlag as 'any' | 'onsite' | 'remote' | undefined;
+      const searchDepth = searchDepthFlag as 'quick' | 'deep' | undefined;
 
       console.log(`Searching for "${query}"...\n`);
-      const results = await discoverJobs({ query, location, sources, company });
+      const discovery = await discoverJobsDetailed({ query, location, sources, company, workMode, searchDepth });
+      const { results } = discovery;
 
       if (results.length === 0) {
         console.log('No results found.');
+        for (const diagnostic of discovery.diagnostics) {
+          console.log(`  ${diagnostic.source}: ${diagnostic.message}`);
+        }
       } else {
         // Print table
         const wTitle = 35, wCompany = 20, wLocation = 20, wSource = 12;

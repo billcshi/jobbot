@@ -1,4 +1,4 @@
-<%- include('_head', { title: 'Pipeline' }) %>
+<%- include('_head', { title: 'Pipeline', activeNav: 'pipeline' }) %>
 
 <style>
   .pipeline-flow { position: relative; padding-left: 48px; }
@@ -321,8 +321,8 @@
       <% for (const j of ingestQueued) { %>
         <div class="job-queue-item">
           <span class="jid">#<%= j.id %></span>
-          <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 70) %>…</a>
-          <span class="tag"><%= j.ats_type %></span>
+          <a data-i18n-skip href="/jobs/<%= j.id %>"><%= j.url.substring(0, 70) %>…</a>
+          <span class="tag" data-i18n-skip><%= j.ats_type %></span>
           <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'extract')" title="Run extraction">▶</button>
           <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
@@ -336,8 +336,8 @@
       <% for (const j of ingestFailed) { %>
         <div class="job-queue-item">
           <span class="jid">#<%= j.id %></span>
-          <a href="/jobs/<%= j.id %>"><%= j.url.substring(0, 50) %>…</a>
-          <span class="err"><%= j.score_reason %></span>
+          <a data-i18n-skip href="/jobs/<%= j.id %>"><%= j.url.substring(0, 50) %>…</a>
+          <span class="err" data-i18n-skip><%= j.score_reason %></span>
           <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'extract')" title="Retry extraction">▶</button>
           <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
@@ -378,8 +378,8 @@
       <% for (const j of extractQueued) { %>
         <div class="job-queue-item">
           <span class="jid">#<%= j.id %></span>
-          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
-          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <a data-i18n-skip href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag" data-i18n-skip><%= j.company %></span><% } %>
           <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'score')" title="Run this step">▶</button>
           <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
@@ -447,8 +447,8 @@
       <% for (const j of composeQueued) { %>
         <div class="job-queue-item">
           <span class="jid">#<%= j.id %></span>
-          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
-          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <a data-i18n-skip href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag" data-i18n-skip><%= j.company %></span><% } %>
           <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'compose')" title="Run compose">▶</button>
           <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
@@ -489,8 +489,8 @@
       <% for (const j of auditQueued) { %>
         <div class="job-queue-item">
           <span class="jid">#<%= j.id %></span>
-          <a href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
-          <% if (j.company) { %><span class="tag"><%= j.company %></span><% } %>
+          <a data-i18n-skip href="/jobs/<%= j.id %>"><%= j.title || 'Untitled' %></a>
+          <% if (j.company) { %><span class="tag" data-i18n-skip><%= j.company %></span><% } %>
           <button class="queue-run-btn" onclick="event.preventDefault(); runJobStep(<%= j.id %>, 'audit')" title="Run this step">▶</button>
           <button class="queue-del-btn" onclick="event.preventDefault(); deleteQueueJob(<%= j.id %>)" title="Delete">✕</button>
         </div>
@@ -723,7 +723,7 @@
     for (const t of tasks) {
       const elapsed = t.elapsedSec ? fmtElapsed(t.elapsedSec) : '—';
       const label = t.title
-        ? (t.title || '') + (t.company ? ' <span style="color:var(--text-dim)">@ ' + t.company + '</span>' : '')
+        ? escapeTaskText(t.title || '') + (t.company ? ' <span style="color:var(--text-dim)">@ ' + escapeTaskText(t.company) + '</span>' : '')
         : '<span style="color:var(--text-dim)">—</span>';
       const stageBadge = '<span style="color:var(--text-dim);font-size:10px;text-transform:uppercase">' + (STAGE_NAMES[t.stage] || t.stage) + '</span>';
       const cancelBtn = t.status === 'running'
@@ -740,13 +740,17 @@
       rows += '<tr class="task-row' + rowClass + '">';
       rows += '<td style="font-variant-numeric:tabular-nums;font-weight:600">#' + t.jobId + '</td>';
       rows += '<td>' + stageBadge + '</td>';
-      rows += '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</td>';
+      rows += '<td data-i18n-skip style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + label + '</td>';
       rows += '<td>' + statusIcons[t.status] + '</td>';
       rows += '<td style="font-variant-numeric:tabular-nums;color:var(--text-dim)">' + elapsed + '</td>';
       rows += '<td style="text-align:right">' + cancelBtn + '</td>';
       rows += '</tr>';
     }
     tbody.innerHTML = rows;
+  }
+
+  function escapeTaskText(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   async function cancelTask(jobId) {

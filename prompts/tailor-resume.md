@@ -117,7 +117,16 @@ Return only valid JSON. Do not use Markdown fences. Use this exact V2 shape:
     "databases": [],
     "data_processing": []
   },
-  "selected_projects": [],
+  "selected_projects": [
+    {
+      "source_project_id": "project:0",
+      "name": "COPY EXACTLY FROM EVIDENCE",
+      "technologies": ["COPY EXACT ALLOWED PROJECT TECHNOLOGY"],
+      "highlights": [
+        "Built a supported project capability."
+      ]
+    }
+  ],
   "claim_provenance": [
     {
       "claim": "Backend engineer experienced in building and operating services on AWS.",
@@ -145,4 +154,5 @@ and `other`. Allowed `priority` values are `required` and `preferred`.
 
 Before returning JSON, verify that every string in `summary` and `highlights`
 has exactly one matching `claim_provenance.claim`, every source ID exists, and
-no unsupported number or skill has been introduced.
+no unsupported number or skill has been introduced. `technologies` must always
+be a JSON array of exact evidence strings, even when it contains only one item.

@@ -5,6 +5,7 @@ import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../../uti
 import { parseLLMJson } from '../../utils/parse-llm-json.js';
 import { logAiCall, extractUsage } from '../../utils/ai-logger.js';
 import { logger } from '../../utils/logger.js';
+import { requestAiJson } from '../../utils/http-json.js';
 
 const EXTRACT_PROMPT = readFileSync(`${PROMPTS_DIR}/extract-job.md`, 'utf-8');
 
@@ -74,34 +75,24 @@ export async function extractWithLLM(html: string, url: string, signal?: AbortSi
   let errorMsg: string | undefined;
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const request = await requestAiJson<{
+      choices: [{ message: { content: string; reasoning_content?: string } }];
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      errorMsg = `HTTP ${response.status}: ${body.slice(0, 200)}`;
-    } else {
-      const responseText = await response.text();
-      let data: { choices: [{ message: { content: string; reasoning_content?: string } }]; usage?: Record<string, number> } | undefined;
-      let content: string | undefined;
-      try {
-        data = JSON.parse(responseText);
-        content = data!.choices?.[0]?.message?.content;
-        const reasoning = data!.choices?.[0]?.message?.reasoning_content;
-        if (!content && reasoning) {
-          errorMsg = `DeepSeek reasoning exceeded token limit (reasoning: ${reasoning.slice(0, 200)})`;
-        } else if (!content) {
-          errorMsg = `Empty response from DeepSeek (raw: ${responseText.slice(0, 300)})`;
-        }
-      } catch {
-        errorMsg = `DeepSeek returned non-JSON: ${responseText.slice(0, 300)}`;
+    }, { signal, label: 'DeepSeek job extraction' });
+      const data = request.data;
+      const content = data.choices?.[0]?.message?.content;
+      const reasoning = data.choices?.[0]?.message?.reasoning_content;
+      if (!content && reasoning) {
+        errorMsg = `DeepSeek reasoning exceeded token limit (reasoning: ${reasoning.slice(0, 200)})`;
+      } else if (!content) {
+        errorMsg = 'Empty response from DeepSeek';
       }
       if (content && data) {
         const parsed = parseLLMJson(content, `extract ${url.slice(0, 80)}`) as Record<string, any>; // LLM output is inherently untyped
@@ -115,7 +106,7 @@ export async function extractWithLLM(html: string, url: string, signal?: AbortSi
           requestSummary: `Extract job details from ${url} (${truncated.length} chars)`,
           responseSummary: `"${parsed.title}" at ${parsed.company} (${parsed.location})`,
           ...usage,
-          durationMs: Date.now() - startMs,
+          durationMs: request.durationMs,
           success: true,
         });
 
@@ -136,7 +127,6 @@ export async function extractWithLLM(html: string, url: string, signal?: AbortSi
           skills: Array.isArray(parsed.skills) ? parsed.skills.filter((s: unknown): s is string => typeof s === 'string') : [],
         };
       }
-    }
   } catch (err) {
     errorMsg = err instanceof Error ? err.message : String(err);
   }

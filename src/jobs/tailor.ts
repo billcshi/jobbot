@@ -9,6 +9,7 @@ import { logAiCall, extractUsage } from '../utils/ai-logger.js';
 import { logger } from '../utils/logger.js';
 import { buildCandidateEvidence, evidencePromptContext } from '../domain/resume/evidence.js';
 import { parseProvenancedTailoredResumeData } from '../domain/resume/contract.js';
+import { normalizeSummaryProvenance } from '../domain/resume/provenance.js';
 import type { ProvenancedTailoredResumeData } from '../domain/resume/types.js';
 import { validateResume } from '../resume/validate.js';
 import { validateSemanticEntailment, type SemanticEntailmentResult } from '../resume/entailment.js';
@@ -23,8 +24,32 @@ import { JobKnowledgeRepository } from '../repositories/job-knowledge-repository
 import { ResumeRepository, type ResumeClaimInput } from '../repositories/resume-repository.js';
 import { toJsonObject, type JsonObject } from '../domain/shared/json.js';
 import { rethrowAbort, throwIfAborted } from '../utils/abort.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 const BASE_TAILOR_PROMPT = readFileSync(`${PROMPTS_DIR}/tailor-resume.md`, 'utf-8');
+const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/v1/chat/completions';
+
+export type TailorParseAttempt<T> =
+  | { ok: true; output: T }
+  | { ok: false; error: unknown; repairInput: string };
+
+export function parseTailorResponseForRepair<T>(
+  content: string,
+  label: string,
+  validate: (value: unknown) => T,
+): TailorParseAttempt<T> {
+  let parsed: unknown;
+  try {
+    parsed = parseLLMJson(content, label);
+    return { ok: true, output: validate(parsed) };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+      repairInput: parsed === undefined ? content : JSON.stringify(parsed, null, 2),
+    };
+  }
+}
 
 function jsonObject(value: unknown, label: string): JsonObject {
   return toJsonObject(JSON.parse(JSON.stringify(value)) as unknown, label);
@@ -300,47 +325,212 @@ export async function tailorJob(jobId: number, auditFeedback?: string, variant?:
   }
 
   try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const initialRequest = await requestAiJson<{
+      choices: [{
+        finish_reason?: string;
+        message: { content?: string; reasoning_content?: string };
+      }];
+      usage?: Record<string, number>;
+    }>(DEEPSEEK_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`DeepSeek API error ${response.status}: ${body.slice(0, 200)}`);
+    }, { signal, label: 'DeepSeek customize' });
+    const data = initialRequest.data;
+    const content = data.choices[0]?.message?.content;
+    if (!content) {
+      const choice = data.choices[0];
+      const reasoningChars = choice?.message?.reasoning_content?.length ?? 0;
+      throw new Error(
+        `Empty response from DeepSeek (finish_reason=${choice?.finish_reason ?? 'unknown'}, reasoning_chars=${reasoningChars})`,
+      );
     }
 
-    const data = (await response.json()) as {
-      choices: [{ message: { content: string } }];
-      usage?: Record<string, number>;
+    const validateOutput = (value: unknown): ProvenancedTailoredResumeData => {
+      const output = normalizeSummaryProvenance(parseProvenancedTailoredResumeData(value));
+      const truthValidation = validateResume(candidateProfile, output, {
+        requirements: frozenRequirements,
+      });
+      if (!truthValidation.valid) {
+        const details = truthValidation.issues
+          .slice(0, 10)
+          .map((item) => `${item.path}: ${item.message}`)
+          .join('; ');
+        const remaining = truthValidation.issues.length - 10;
+        const suffix = remaining > 0 ? `; plus ${remaining} more issue(s)` : '';
+        throw new Error(`Tailored resume failed truth validation: ${details}${suffix}`);
+      }
+      return output;
     };
-    const content = data.choices[0]?.message?.content;
-    if (!content) throw new Error('Empty response from DeepSeek');
 
-    const parsedOutput = parseLLMJson(content, `tailor job #${jobId}`);
-    llmOutput = parseProvenancedTailoredResumeData(parsedOutput);
-    const truthValidation = validateResume(candidateProfile, llmOutput, {
-      requirements: frozenRequirements,
-    });
-    if (!truthValidation.valid) {
-      const details = truthValidation.issues
-        .slice(0, 10)
-        .map((item) => `${item.path}: ${item.message}`)
-        .join('; ');
-      const remaining = truthValidation.issues.length - 10;
-      const suffix = remaining > 0 ? `; plus ${remaining} more issue(s)` : '';
-      throw new Error(`Tailored resume failed truth validation: ${details}${suffix}`);
+    const parseAttempt = parseTailorResponseForRepair(content, `tailor job #${jobId}`, validateOutput);
+    if (parseAttempt.ok) {
+      llmOutput = parseAttempt.output;
+    } else {
+      const validationError = parseAttempt.error;
+      const validationMessage = validationError instanceof Error
+        ? validationError.message
+        : String(validationError);
+      logger.warn(`Repairing invalid tailored resume for job ${jobId}: ${validationMessage}`);
+
+      const repairStartMs = Date.now();
+      try {
+        const repairRequest = await requestAiJson<{
+          choices: [{ message: { content?: string } }];
+          usage?: Record<string, number>;
+        }>(DEEPSEEK_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: getDeepseekModel(),
+            messages: [
+              {
+                role: 'system',
+                content: [
+                  systemPrompt,
+                  '',
+                  'You are repairing an existing response that failed the resume contract.',
+                  'Return the complete corrected JSON object only. Do not add facts or change supported meaning.',
+                  'Every summary/highlight string must be copied verbatim into exactly one claim_provenance.claim.',
+                  'All technologies fields must be JSON arrays.',
+                ].join('\n'),
+              },
+              {
+                role: 'user',
+                content: [
+                  '## Validation error',
+                  validationMessage,
+                  '',
+                  '## Invalid response to repair',
+                  parseAttempt.repairInput,
+                  '',
+                  '## Frozen requirements (must remain exact)',
+                  JSON.stringify(frozenRequirements, null, 2),
+                  '',
+                  '## Authoritative candidate evidence',
+                  JSON.stringify(evidencePromptContext(candidateEvidence), null, 2),
+                ].join('\n'),
+              },
+            ],
+            max_tokens: 16384,
+            thinking: getDeepseekThinking('customize'),
+          }),
+        }, { signal, label: 'DeepSeek contract repair' });
+        const repairData = repairRequest.data;
+        const repairedContent = repairData.choices[0]?.message?.content;
+        if (!repairedContent) throw new Error('Empty response from DeepSeek contract repair');
+        const repairedOutput = parseLLMJson(repairedContent, `repair tailor job #${jobId}`);
+        llmOutput = validateOutput(repairedOutput);
+        logAiCall({
+          operation: 'customize-contract-repair', model: getDeepseekModel(), provider: 'deepseek',
+          endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair resume contract for job #${jobId}`,
+          responseSummary: 'Contract repair validated', ...extractUsage(repairData as Record<string, unknown>),
+          durationMs: repairRequest.durationMs, success: true,
+        });
+      } catch (repairError) {
+        const message = repairError instanceof Error ? repairError.message : String(repairError);
+        logAiCall({
+          operation: 'customize-contract-repair', model: getDeepseekModel(), provider: 'deepseek',
+          endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair resume contract for job #${jobId}`,
+          responseSummary: message, durationMs: Date.now() - repairStartMs, success: false, error: message,
+        });
+        throw repairError;
+      }
     }
     semanticValidation = await validateSemanticEntailment(candidateProfile, llmOutput, {
       apiKey,
       signal,
     });
     throwIfAborted(signal);
+    if (!semanticValidation.valid) {
+      const failedAssessments = semanticValidation.assessments
+        .filter((assessment) => assessment.verdict !== 'entailed')
+        .map((assessment) => ({
+          claim: assessment.claim,
+          verdict: assessment.verdict,
+          reason: assessment.reason,
+        }));
+      logger.warn(`Repairing semantically unsupported claims for job ${jobId}`);
+      const semanticRepairStartMs = Date.now();
+      try {
+      const semanticRepairRequest = await requestAiJson<{
+        choices: [{ message: { content?: string } }];
+        usage?: Record<string, number>;
+      }>(DEEPSEEK_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: getDeepseekModel(),
+          messages: [
+            {
+              role: 'system',
+              content: [
+                systemPrompt,
+                '',
+                'You are repairing resume claims rejected by an independent semantic entailment gate.',
+                'Return the complete corrected JSON object only.',
+                'Remove or rewrite every rejected assertion using only its linked source text.',
+                'Update the exact matching claim_provenance entry whenever a summary or highlight changes.',
+                'Do not add facts, implications, adjectives, scope, role labels, or metrics absent from linked sources.',
+              ].join('\n'),
+            },
+            {
+              role: 'user',
+              content: [
+                '## Rejected claims and reasons',
+                JSON.stringify(failedAssessments, null, 2),
+                '',
+                '## Resume response to repair',
+                JSON.stringify(llmOutput, null, 2),
+                '',
+                '## Frozen requirements (must remain exact)',
+                JSON.stringify(frozenRequirements, null, 2),
+                '',
+                '## Authoritative candidate evidence',
+                JSON.stringify(evidencePromptContext(candidateEvidence), null, 2),
+              ].join('\n'),
+            },
+          ],
+          max_tokens: 16384,
+          thinking: getDeepseekThinking('customize'),
+        }),
+      }, { signal, label: 'DeepSeek semantic repair' });
+      const semanticRepairData = semanticRepairRequest.data;
+      const semanticRepairContent = semanticRepairData.choices[0]?.message?.content;
+      if (!semanticRepairContent) throw new Error('Empty response from DeepSeek semantic repair');
+      llmOutput = validateOutput(parseLLMJson(semanticRepairContent, `semantic repair tailor job #${jobId}`));
+      semanticValidation = await validateSemanticEntailment(candidateProfile, llmOutput, {
+        apiKey,
+        signal,
+      });
+      throwIfAborted(signal);
+      logAiCall({
+        operation: 'customize-semantic-repair', model: getDeepseekModel(), provider: 'deepseek',
+        endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair semantic claims for job #${jobId}`,
+        responseSummary: semanticValidation.valid ? 'Semantic repair validated' : 'Semantic repair remained invalid',
+        ...extractUsage(semanticRepairData as Record<string, unknown>),
+        durationMs: semanticRepairRequest.durationMs, success: semanticValidation.valid,
+        error: semanticValidation.valid ? undefined : 'Semantic entailment validation failed after repair',
+      });
+      } catch (repairError) {
+        const message = repairError instanceof Error ? repairError.message : String(repairError);
+        logAiCall({
+          operation: 'customize-semantic-repair', model: getDeepseekModel(), provider: 'deepseek',
+          endpoint: DEEPSEEK_ENDPOINT, requestSummary: `Repair semantic claims for job #${jobId}`,
+          responseSummary: message, durationMs: Date.now() - semanticRepairStartMs, success: false, error: message,
+        });
+        throw repairError;
+      }
+    }
     if (!semanticValidation.valid) {
       const failed = semanticValidation.assessments
         .filter((assessment) => assessment.verdict !== 'entailed')

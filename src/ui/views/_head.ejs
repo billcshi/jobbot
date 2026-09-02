@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JobBot — <%= typeof title === 'string' ? title : 'Dashboard' %></title>
+  <title<% if (typeof localizeTitle !== 'undefined' && !localizeTitle) { %> data-i18n-skip<% } %>>JobBot — <%= typeof title === 'string' ? title : 'Dashboard' %></title>
   <style>
     /* ----- reset & base -------------------------------------------------- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46,9 +46,9 @@
       z-index: 10;
     }
     nav .logo {
-      font-weight: 700;
+      font-weight: 400;
       font-size: 16px;
-      color: var(--accent);
+      color: var(--text-muted);
       text-decoration: none;
     }
     nav .logo span { color: var(--text-muted); font-weight: 400; }
@@ -58,6 +58,29 @@
       font-size: 14px;
     }
     nav a:hover { color: var(--text); }
+    nav .nav-link {
+      align-self: stretch;
+      display: inline-flex;
+      align-items: center;
+      border-bottom: 2px solid transparent;
+      padding-top: 2px;
+    }
+    nav .nav-link.active {
+      color: var(--accent);
+      font-weight: 700;
+      border-bottom-color: var(--accent);
+    }
+    .language-toggle {
+      background: var(--bg);
+      color: var(--accent);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .language-toggle:hover { border-color: var(--accent); }
 
     /* ----- layout -------------------------------------------------------- */
     .container {
@@ -364,18 +387,22 @@
   </style>
 </head>
 <body>
-  <nav>
+  <%
+    const selectedNav = typeof activeNav === 'string' ? activeNav : '';
+  %>
+  <nav data-i18n>
     <a href="/" class="logo">JobBot</a>
-    <a href="/">Dashboard</a>
-    <a href="/add-urls">Add URLs</a>
-    <a href="/pipeline">Pipeline</a>
-    <a href="/events">Events</a>
-    <a href="/profile">Profile</a>
-    <a href="/ai-log">AI Log</a>
+    <a href="/" class="nav-link<%= selectedNav === 'dashboard' ? ' active' : '' %>"<% if (selectedNav === 'dashboard') { %> aria-current="page"<% } %>>Dashboard</a>
+    <a href="/add-urls" class="nav-link<%= selectedNav === 'add-urls' ? ' active' : '' %>"<% if (selectedNav === 'add-urls') { %> aria-current="page"<% } %>>Add URLs</a>
+    <a href="/pipeline" class="nav-link<%= selectedNav === 'pipeline' ? ' active' : '' %>"<% if (selectedNav === 'pipeline') { %> aria-current="page"<% } %>>Pipeline</a>
+    <a href="/events" class="nav-link<%= selectedNav === 'events' ? ' active' : '' %>"<% if (selectedNav === 'events') { %> aria-current="page"<% } %>>Events</a>
+    <a href="/profile" class="nav-link<%= selectedNav === 'profile' ? ' active' : '' %>"<% if (selectedNav === 'profile') { %> aria-current="page"<% } %>>Profile</a>
+    <a href="/ai-log" class="nav-link<%= selectedNav === 'ai-log' ? ' active' : '' %>"<% if (selectedNav === 'ai-log') { %> aria-current="page"<% } %>>AI Log</a>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-      <span style="font-size:13px;color:var(--text-muted)">👤 <%= userName %></span>
+      <button type="button" class="language-toggle" data-language-toggle>中文</button>
+      <span data-i18n-skip style="font-size:13px;color:var(--text-muted)">👤 <%= userName %></span>
       <button onclick="logout()"
         style="background:var(--bg);color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer">Log out</button>
     </div>
   </nav>
-  <div class="container">
+  <div class="container" data-i18n>

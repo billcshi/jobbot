@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildCandidateEvidence } from '../src/domain/resume/evidence.js';
+import { normalizeSummaryProvenance } from '../src/domain/resume/provenance.js';
 import type { ProvenancedTailoredResumeData } from '../src/domain/resume/types.js';
 import {
   createJobRequirements,
@@ -10,7 +11,12 @@ import {
 import { validateResume } from '../src/resume/validate.js';
 import { validateSemanticEntailment } from '../src/resume/entailment.js';
 import { preservesInjectedContent } from '../src/jobs/render.js';
-import { calculateAuditOutcome, parseAuditModelOutput } from '../src/jobs/audit.js';
+import {
+  calculateAuditOutcome,
+  parseAuditModelOutput,
+  parseLocalVisualReview,
+  parseLocalVisualReviewSafely,
+} from '../src/jobs/audit.js';
 
 const PROFILE = {
   work_experience: [
@@ -128,6 +134,100 @@ describe('candidate evidence', () => {
   });
 });
 
+describe('summary provenance normalization', () => {
+  it('merges exact sentence provenance into the complete summary claim', () => {
+    const resume = validResume();
+    const first = 'Software engineer who built an API';
+    const second = 'serving 10,000 requests per day';
+    resume.claim_provenance = [
+      {
+        claim: first,
+        source_claim_ids: ['experience:0:identity'],
+        requirement_ids: ['requirement:backend'],
+      },
+      {
+        claim: second,
+        source_claim_ids: ['experience:0:highlight:0'],
+        requirement_ids: ['requirement:backend'],
+      },
+      ...resume.claim_provenance.slice(1),
+    ];
+
+    const normalized = normalizeSummaryProvenance(resume);
+    expect(normalized.claim_provenance[0]).toEqual({
+      claim: resume.summary,
+      source_claim_ids: ['experience:0:identity', 'experience:0:highlight:0'],
+      requirement_ids: ['requirement:backend'],
+    });
+    expect(normalized.summary_source_claim_ids).toEqual([
+      'experience:0:identity',
+      'experience:0:highlight:0',
+    ]);
+  });
+
+  it('does not merge partial provenance that leaves words uncovered', () => {
+    const resume = validResume();
+    resume.claim_provenance[0] = {
+      claim: 'built an API',
+      source_claim_ids: ['experience:0:highlight:0'],
+      requirement_ids: ['requirement:backend'],
+    };
+
+    expect(normalizeSummaryProvenance(resume)).toBe(resume);
+  });
+});
+
+describe('hash-bound local visual review', () => {
+  it('accepts a review bound to the exact job, resume version, and PDF hash', () => {
+    expect(parseLocalVisualReview({
+      schema_version: 1,
+      job_id: 2,
+      resume_version_id: 4,
+      resume_sha256: 'abc123',
+      reviewer_type: 'agent',
+      reviewer: 'PDF visual inspection',
+      status: 'passed',
+      score: 90,
+      summary: 'One page with no clipping or overlap.',
+      issues: [],
+    }, { jobId: 2, resumeVersionId: 4, resumeSha256: 'abc123' })).toMatchObject({
+      status: 'passed',
+      score: 90,
+      reviewer: 'PDF visual inspection',
+    });
+  });
+
+  it('rejects a stale review after the canonical PDF changes', () => {
+    expect(() => parseLocalVisualReview({
+      schema_version: 1,
+      job_id: 2,
+      resume_version_id: 4,
+      resume_sha256: 'old-hash',
+      reviewer_type: 'agent',
+      reviewer: 'PDF visual inspection',
+      status: 'passed',
+      score: 90,
+      summary: 'Reviewed.',
+      issues: [],
+    }, { jobId: 2, resumeVersionId: 4, resumeSha256: 'new-hash' })).toThrow('PDF hash does not match');
+  });
+
+  it('turns an invalid local review into a fallback diagnostic instead of throwing', () => {
+    expect(parseLocalVisualReviewSafely({
+      schema_version: 1,
+      job_id: 2,
+      resume_version_id: 4,
+      resume_sha256: 'stale',
+      reviewer_type: 'human',
+      reviewer: 'Reviewer',
+      status: 'passed', score: 90, summary: 'Reviewed.', issues: [],
+    }, { jobId: 2, resumeVersionId: 4, resumeSha256: 'current' })).toEqual({
+      review: null,
+      error: 'Local visual review PDF hash does not match',
+    });
+  });
+});
+
 describe('resume truth validation', () => {
   it('accepts a provenanced rewrite backed by candidate evidence', () => {
     expect(validateResume(PROFILE, validResume())).toEqual({ valid: true, issues: [] });
@@ -227,6 +327,32 @@ describe('resume truth validation', () => {
 });
 
 describe('job requirement normalization', () => {
+  it('treats The Muse section headings and newsletter copy as structure, not requirements', () => {
+    const spans = requirementCandidateSpans([
+      "What You'll Be Doing",
+      'Build and ship services powering subscription tiering.',
+      'Want more jobs like this?',
+      'Get Software Engineering jobs delivered to your inbox every week.',
+      'Email Address*Send me The Muse newsletters.',
+      'Qualifications',
+      'Professional Experience: 5+ years of backend software development.',
+      'Preferred Skills',
+      'Experience with consumer subscription products.',
+      "Why You'll Love Working Here:",
+      'Flexible PTO and employee discounts.',
+      'What We Offer',
+      'We provide an inclusive environment.',
+    ].join('\n'));
+
+    expect(spans).toContain('Build and ship services powering subscription tiering.');
+    expect(spans).toContain('Professional Experience: 5+ years of backend software development.');
+    expect(spans).toContain('Experience with consumer subscription products.');
+    expect(spans).not.toContain("What You'll Be Doing");
+    expect(spans).not.toContain('Want more jobs like this?');
+    expect(spans).not.toContain('Flexible PTO and employee discounts.');
+    expect(spans).not.toContain('We provide an inclusive environment.');
+  });
+
   it('deduplicates requirements and generates stable IDs', () => {
     const requirements = createJobRequirements([
       { text: ' Build backend APIs ', kind: 'responsibility' },
@@ -245,8 +371,10 @@ describe('job requirement normalization', () => {
     }];
     const requirement = createJobRequirements(drafts)[0]!;
     let call = 0;
-    const fetchImpl: typeof fetch = async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
       call += 1;
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       const content = call === 1
         ? { requirements: drafts }
         : { coverage: [{
@@ -269,6 +397,11 @@ describe('job requirement normalization', () => {
       expect.objectContaining({ text: 'Build backend APIs', id: expect.stringMatching(/^requirement:/) }),
     ]);
     expect(call).toBe(2);
+    expect(requestBodies[0]?.['thinking']).toEqual({ type: 'disabled' });
+    expect(requestBodies[1]?.['thinking']).toEqual(requestBodies[0]?.['thinking']);
+    const extractionMessages = requestBodies[0]?.['messages'] as Array<{ content: string }>;
+    const extractionInput = JSON.parse(extractionMessages[1]!.content) as Record<string, unknown>;
+    expect(extractionInput['normative_spans_to_cover']).toEqual(['You must build backend APIs.']);
   });
 
   it('refuses to freeze an extraction that misses a normative JD span', async () => {
@@ -378,6 +511,28 @@ State University`;
   it('rejects malformed audit results instead of assigning a default score', () => {
     expect(() => parseAuditModelOutput({ issues: [], summary: 'missing score' })).toThrow('score');
     expect(() => parseAuditModelOutput({ issues: [], score: 70 })).toThrow('summary');
+  });
+
+  it('accepts the shared audit contract required by every committee prompt', () => {
+    expect(parseAuditModelOutput({
+      score: 82,
+      summary: 'Clear and relevant, with minor density concerns.',
+      issues: [{
+        severity: 'low',
+        category: 'content',
+        description: 'One section is dense.',
+        suggestion: 'Trim one bullet.',
+      }],
+    })).toEqual({
+      score: 82,
+      summary: 'Clear and relevant, with minor density concerns.',
+      issues: [{
+        severity: 'low',
+        category: 'content',
+        description: 'One section is dense.',
+        suggestion: 'Trim one bullet.',
+      }],
+    });
   });
 
   it('cannot pass when visual review failed or is unavailable', () => {

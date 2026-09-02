@@ -3,6 +3,7 @@ import type { CoverLetterTruthContext } from '../domain/cover-letter/truth.js';
 import { extractUsage, logAiCall } from '../utils/ai-logger.js';
 import { getDeepseekKey, getDeepseekModel, getDeepseekThinking } from '../utils/config.js';
 import { parseLLMJson } from '../utils/parse-llm-json.js';
+import { requestAiJson } from '../utils/http-json.js';
 
 export type CoverLetterEntailmentVerdict = 'entailed' | 'unsupported' | 'uncertain';
 
@@ -125,17 +126,15 @@ export async function validateCoverLetterEntailment(
   const thinking = getDeepseekThinking('audit-content');
   if (thinking) request['thinking'] = thinking;
   try {
-    const response = await fetchImpl('https://api.deepseek.com/v1/chat/completions', {
+    const transport = await requestAiJson<{
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, number>;
+    }>('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(request),
-      signal: options.signal,
-    });
-    if (!response.ok) throw new Error(`DeepSeek API error ${response.status}: ${(await response.text()).slice(0, 200)}`);
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: Record<string, number>;
-    };
+    }, { signal: options.signal, label: 'DeepSeek cover-letter entailment', fetchImpl });
+    const data = transport.data;
     const content = data.choices?.[0]?.message?.content;
     if (!content) throw new Error('Cover-letter entailment returned an empty response');
     const assessments = parseCoverLetterAssessments(
@@ -147,7 +146,7 @@ export async function validateCoverLetterEntailment(
       endpoint: 'https://api.deepseek.com/v1/chat/completions',
       requestSummary: `Validate ${inputs.length} cover-letter sentences against bound evidence`,
       responseSummary: `${assessments.filter((item) => item.verdict === 'entailed').length}/${assessments.length} entailed`,
-      ...extractUsage(data as Record<string, unknown>), durationMs: Date.now() - startMs, success: true,
+      ...extractUsage(data as Record<string, unknown>), durationMs: transport.durationMs, success: true,
     });
     return { valid: assessments.every((assessment) => assessment.verdict === 'entailed'), assessments };
   } catch (error) {
