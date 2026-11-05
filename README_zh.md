@@ -267,3 +267,8 @@ jobbot/
 TypeScript · pnpm · SQLite (better-sqlite3) · Express · EJS · YAML 配置 · LaTeX · DeepSeek API · Vitest
 
 支持 **Claude Code、Codex 及其他 AI 编码助手**，可运行于 Windows PowerShell 或 WSL2/Linux。
+
+## 开源协议
+
+JobBot 采用 [0BSD License](LICENSE) 开源，允许以极少限制使用、修改、
+再发布和商用。

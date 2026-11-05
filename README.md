@@ -283,3 +283,8 @@ jobbot/
 TypeScript · pnpm · SQLite (better-sqlite3) · YAML config · LaTeX · EJS · Express · DeepSeek API · OpenAI/Claude vision · poppler-utils · Vitest
 
 Designed for use with **Claude Code, Codex, and other AI coding agents** on Windows PowerShell or WSL2/Linux.
+
+## License
+
+JobBot is open source under the [0BSD License](LICENSE). This permits use,
+modification, redistribution, and commercial use with minimal restrictions.
