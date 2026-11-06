@@ -30,7 +30,7 @@ import { appContextForUser } from '../utils/app-context.js';
 import { createDefaultPipeline } from '../application/pipeline/default-pipeline.js';
 import { AuthError, AuthService } from '../auth/auth-service.js';
 
-const app = express();
+export const app: express.Express = express();
 
 // ----- configuration -------------------------------------------------------
 
@@ -1803,7 +1803,7 @@ app.post('/api/jobs/:id/apply', (req, res) => {
 
   if (existing) {
     db.prepare(
-      `UPDATE applications SET status = ?, notes = ?, submitted_at = COALESCE(submitted_at, datetime('now')),
+      `UPDATE applications SET status = ?, notes = COALESCE(?, notes), submitted_at = COALESCE(submitted_at, datetime('now')),
        resume_version_id = COALESCE(?, resume_version_id),
        updated_at = datetime('now') WHERE id = ? AND job_id = ? AND user_id = ?`,
     ).run(newStatus, notes ?? null, resumeVersionId ?? null, existing.id, jobId, userId);
